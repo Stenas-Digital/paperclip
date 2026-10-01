@@ -292,6 +292,12 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
       fs.cpSync(sharedSkillsDir, target, { recursive: true });
     }
     const metadata = JSON.parse(fs.readFileSync(path.join(checkoutPath, "cli", "package.json"), "utf8")) as { version: string };
+    // [stenas:git-install] Like scripts/release.sh step 3: give every public
+    // package one version, because bundled packing (materializePublishManifest)
+    // pins workspace dependencies to the packing package's own version.
+    if (fs.existsSync(path.join(checkoutPath, "scripts", "release-package-map.mjs"))) {
+      await runCommand(process.execPath, [path.join(checkoutPath, "scripts", "release-package-map.mjs"), "set-version", metadata.version], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 4 * 1024 * 1024 });
+    }
     const workspacePackages = resolveGitInstallWorkspacePackages(checkoutPath);
     for (const [index, workspacePackage] of workspacePackages.entries()) {
       const packageDir = path.join(checkoutPath, workspacePackage.dir);
