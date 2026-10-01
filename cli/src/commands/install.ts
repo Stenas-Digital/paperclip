@@ -281,6 +281,16 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
     // [stenas:git-install] The bundled server package copies server/ui-dist,
     // which only the release flow prepared; build it here as well.
     await runCommand("bash", ["scripts/prepare-server-ui-dist.sh"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
+    // [stenas:git-install] Mirror scripts/release.sh: these packages ship the
+    // shared skills directory (server's bundled copy would otherwise ENOENT, and
+    // the adapters would silently lose their built-in skills).
+    const sharedSkillsDir = path.join(checkoutPath, "skills");
+    for (const packageDir of ["server", "packages/adapters/claude-local", "packages/adapters/codex-local"]) {
+      const target = path.join(checkoutPath, packageDir, "skills");
+      if (!fs.existsSync(sharedSkillsDir) || !fs.existsSync(path.join(checkoutPath, packageDir))) continue;
+      fs.rmSync(target, { recursive: true, force: true });
+      fs.cpSync(sharedSkillsDir, target, { recursive: true });
+    }
     const metadata = JSON.parse(fs.readFileSync(path.join(checkoutPath, "cli", "package.json"), "utf8")) as { version: string };
     const workspacePackages = resolveGitInstallWorkspacePackages(checkoutPath);
     for (const [index, workspacePackage] of workspacePackages.entries()) {
