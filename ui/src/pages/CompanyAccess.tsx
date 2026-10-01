@@ -7,6 +7,9 @@ import {
 } from "@paperclipai/shared";
 import { Shield, ShieldCheck, Trash2 } from "lucide-react";
 import { accessApi, type CompanyMember } from "@/api/access";
+// [stenas:agent-visibility]
+import { AgentMultiSelect } from "@/components/AgentMultiSelect";
+import { AGENT_ACCESS_RESTRICTED_ROLES, memberAgentAccessIds } from "@/lib/agent-access";
 import { agentsApi } from "@/api/agents";
 import { ApiError } from "@/api/client";
 import { issuesApi } from "@/api/issues";
@@ -66,6 +69,8 @@ export function CompanyAccess() {
   const [reassignmentTarget, setReassignmentTarget] = useState<string>("__unassigned");
   const [draftRole, setDraftRole] = useState<CompanyMember["membershipRole"]>(null);
   const [draftStatus, setDraftStatus] = useState<EditableMemberStatus>("active");
+  // [stenas:agent-visibility]
+  const [draftAgentIds, setDraftAgentIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     setBreadcrumbs([
@@ -101,11 +106,21 @@ export function CompanyAccess() {
   };
 
   const updateMemberMutation = useMutation({
-    mutationFn: async (input: { memberId: string; membershipRole: CompanyMember["membershipRole"]; status: EditableMemberStatus }) => {
-      return accessApi.updateMember(selectedCompanyId!, input.memberId, {
+    mutationFn: async (input: {
+      memberId: string;
+      membershipRole: CompanyMember["membershipRole"];
+      status: EditableMemberStatus;
+      // [stenas:agent-visibility] null = leave agent access unchanged.
+      agentIds: string[] | null;
+    }) => {
+      const updated = await accessApi.updateMember(selectedCompanyId!, input.memberId, {
         membershipRole: input.membershipRole,
         status: input.status,
       });
+      if (input.agentIds) {
+        await accessApi.updateMemberAgentAccess(selectedCompanyId!, input.memberId, input.agentIds);
+      }
+      return updated;
     },
     onSuccess: async () => {
       setEditingMemberId(null);
@@ -220,6 +235,7 @@ export function CompanyAccess() {
     if (!editingMember) return;
     setDraftRole(editingMember.membershipRole);
     setDraftStatus(isEditableMemberStatus(editingMember.status) ? editingMember.status : "suspended");
+    setDraftAgentIds(new Set(memberAgentAccessIds(editingMember)));
   }, [editingMember]);
 
   useEffect(() => {
@@ -258,6 +274,16 @@ export function CompanyAccess() {
       member.id !== removingMemberId,
   );
   const activeReassignmentAgents = (agentsQuery.data ?? []).filter(isAssignableAgent);
+  // [stenas:agent-visibility] Only owners (or instance admins without a
+  // membership) manage which agents restricted members can see.
+  const canManageAgentAccess = !access?.currentUserRole || access.currentUserRole === "owner";
+  const agentAccessOptions = (agentsQuery.data ?? [])
+    .filter((agent) => agent.status !== "terminated")
+    .map((agent) => ({ id: agent.id, name: agent.name, title: agent.title, icon: agent.icon }));
+  const draftRoleIsRestricted = AGENT_ACCESS_RESTRICTED_ROLES.includes(draftRole);
+  const draftAgentAccessChanged = editingMember
+    ? !sameIdSet(draftAgentIds, memberAgentAccessIds(editingMember))
+    : false;
   const assignedIssues = assignedIssuesQuery.data ?? [];
 
   return (
@@ -369,9 +395,18 @@ export function CompanyAccess() {
                       {member.user?.email || member.principalId}
                     </td>
                     <td className="px-3 py-3">
-                      {member.membershipRole
-                        ? HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS[member.membershipRole]
-                        : "Unset"}
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span>
+                          {member.membershipRole
+                            ? HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS[member.membershipRole]
+                            : "Unset"}
+                        </span>
+                        {AGENT_ACCESS_RESTRICTED_ROLES.includes(member.membershipRole) ? (
+                          <Badge variant="outline" title="Agents this member can see">
+                            {formatAgentCount(memberAgentAccessIds(member).length)}
+                          </Badge>
+                        ) : null}
+                      </div>
                     </td>
                     <td className="px-3 py-3">
                       <Badge variant={member.status === "active" ? "secondary" : member.status === "suspended" ? "destructive" : "outline"}>
@@ -451,6 +486,32 @@ export function CompanyAccess() {
                   </select>
                 </label>
               </div>
+              {canManageAgentAccess ? (
+                <div className="space-y-2 text-sm">
+                  <span className="font-medium">Agent access</span>
+                  {draftRoleIsRestricted ? (
+                    <>
+                      <AgentMultiSelect
+                        agents={agentAccessOptions}
+                        selectedAgentIds={draftAgentIds}
+                        onChange={setDraftAgentIds}
+                        loading={agentsQuery.isLoading}
+                        triggerLabel={
+                          draftAgentIds.size === 0 ? "No agents" : `${formatAgentCount(draftAgentIds.size)} selected`
+                        }
+                      />
+                      <p className="text-muted-foreground">
+                        This member only sees the selected agents and the tasks assigned to them. With no agents
+                        selected, they see no agents and no agent-assigned tasks.
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-muted-foreground">
+                      Owners and admins see all agents and tasks.
+                    </p>
+                  )}
+                </div>
+              ) : null}
             </div>
           )}
           <DialogFooter>
@@ -464,6 +525,10 @@ export function CompanyAccess() {
                   memberId: editingMember.id,
                   membershipRole: draftRole,
                   status: draftStatus,
+                  agentIds:
+                    canManageAgentAccess && draftRoleIsRestricted && draftAgentAccessChanged
+                      ? [...draftAgentIds]
+                      : null,
                 });
               }}
               disabled={updateMemberMutation.isPending}
@@ -698,4 +763,14 @@ function PendingJoinRequestCard({
       </div>
     </div>
   );
+}
+
+// [stenas:agent-visibility]
+function sameIdSet(a: ReadonlySet<string>, b: readonly string[]) {
+  if (a.size !== new Set(b).size) return false;
+  return b.every((id) => a.has(id));
+}
+
+function formatAgentCount(count: number) {
+  return `${count} ${count === 1 ? "agent" : "agents"}`;
 }

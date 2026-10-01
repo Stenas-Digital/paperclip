@@ -21,6 +21,10 @@ type SupertestTestConstructor = {
   };
 };
 
+// [stenas:agent-visibility] Upstream suites verify upstream (unrestricted)
+// semantics. The fork's own agent-visibility suites switch it back on.
+process.env.PAPERCLIP_AGENT_VISIBILITY = "off";
+
 const require = createRequire(import.meta.url);
 const SupertestTest = require("supertest/lib/test.js") as SupertestTestConstructor;
 

@@ -1022,6 +1022,8 @@ export const PERMISSION_KEYS = [
   "tasks:manage_active_checkouts",
   "pipelines:write",
   "joins:approve",
+  // [stenas:agent-visibility] Scoped agent access for restricted users; scope { agentIds: string[] }.
+  "agents:access",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 

@@ -9,6 +9,8 @@ import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+// [stenas:agent-visibility]
+import { createAgentVisibilityLiveEventListener } from "./live-events-visibility-filter.js";
 
 interface WsSocket {
   readyState: number;
@@ -260,10 +262,14 @@ export function setupLiveEventsWebSocketServer(
       return;
     }
 
-    const unsubscribe = subscribeCompanyLiveEvents(context.companyId, (event) => {
-      if (socket.readyState !== WebSocket.OPEN) return;
-      socket.send(JSON.stringify(event));
-    });
+    // [stenas:agent-visibility] restricted users only receive visible events.
+    const unsubscribe = subscribeCompanyLiveEvents(
+      context.companyId,
+      createAgentVisibilityLiveEventListener(db, context, (event) => {
+        if (socket.readyState !== WebSocket.OPEN) return;
+        socket.send(JSON.stringify(event));
+      }),
+    );
 
     cleanupByClient.set(socket, unsubscribe);
     aliveByClient.set(socket, true);

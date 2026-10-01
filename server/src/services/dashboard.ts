@@ -4,6 +4,12 @@ import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from 
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 import { executionIssueCondition } from "./issue-visibility.js";
+// [stenas:agent-visibility]
+import {
+  agentVisibilityAgentCondition,
+  agentVisibilityIssueCondition,
+  type AgentVisibility,
+} from "./agent-visibility.js";
 
 const DASHBOARD_RUN_ACTIVITY_DAYS = 14;
 
@@ -26,7 +32,13 @@ function getRecentUtcDateKeys(now: Date, days: number): string[] {
 export function dashboardService(db: Db) {
   const budgets = budgetService(db);
   return {
-    summary: async (companyId: string) => {
+    summary: async (
+      companyId: string,
+      // [stenas:agent-visibility] restricted actors only count what they can see.
+      opts: { visibility?: AgentVisibility } = {},
+    ) => {
+      const visibility = opts.visibility;
+      const restrictedAgentIds = visibility?.restricted ? [...visibility.allowedAgentIds] : null;
       const company = await db
         .select()
         .from(companies)
@@ -38,19 +50,23 @@ export function dashboardService(db: Db) {
       const agentRows = await db
         .select({ status: agents.status, count: sql<number>`count(*)` })
         .from(agents)
-        .where(eq(agents.companyId, companyId))
+        .where(and(eq(agents.companyId, companyId), agentVisibilityAgentCondition(visibility, agents.id)))
         .groupBy(agents.status);
 
       const taskRows = await db
         .select({ status: issues.status, count: sql<number>`count(*)` })
         .from(issues)
-        .where(and(eq(issues.companyId, companyId), executionIssueCondition()))
+        .where(and(eq(issues.companyId, companyId), executionIssueCondition(), agentVisibilityIssueCondition(visibility)))
         .groupBy(issues.status);
 
       const pendingApprovals = await db
         .select({ count: sql<number>`count(*)` })
         .from(approvals)
-        .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
+        .where(and(
+          eq(approvals.companyId, companyId),
+          eq(approvals.status, "pending"),
+          agentVisibilityAgentCondition(visibility, approvals.requestedByAgentId, { keepNull: true }),
+        ))
         .then((rows) => Number(rows[0]?.count ?? 0));
 
       const agentCounts: Record<string, number> = {
@@ -93,6 +109,7 @@ export function dashboardService(db: Db) {
           and(
             eq(costEvents.companyId, companyId),
             gte(costEvents.occurredAt, monthStart),
+            agentVisibilityAgentCondition(visibility, costEvents.agentId, { keepNull: true }),
           ),
         );
 
@@ -130,6 +147,11 @@ export function dashboardService(db: Db) {
         FROM ${heartbeatRuns} AS run
         WHERE run.company_id = ${companyId}
           AND run.created_at >= ${runActivityStart.toISOString()}::timestamptz
+          ${restrictedAgentIds
+            ? restrictedAgentIds.length > 0
+              ? sql`AND run.agent_id IN (${sql.join(restrictedAgentIds.map((id) => sql`${id}::uuid`), sql`, `)})`
+              : sql`AND false`
+            : sql``}
         GROUP BY date, run.status, run.error_code, recovered
       `)) as unknown as Iterable<{
         date: string;

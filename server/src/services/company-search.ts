@@ -38,6 +38,12 @@ import {
 import { companyArtifactsService } from "./company-artifacts.js";
 import { companySearchExtractService } from "./company-search-extract.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+// [stenas:agent-visibility]
+import {
+  agentVisibilityAgentCondition,
+  agentVisibilityIssueCondition,
+  type AgentVisibility,
+} from "./agent-visibility.js";
 import { parseTaskSearch, taskSearchCtes, taskSearchScore, taskSearchFieldMatch, taskSearchTermMatch } from "./task-search.js";
 
 const SNIPPET_MAX_CHARS = 240;
@@ -538,7 +544,14 @@ export function companySearchService(db: Db) {
   const extractService = companySearchExtractService(db);
   return {
     extract: extractService.extract,
-    search: async (companyId: string, query: CompanySearchQuery): Promise<CompanySearchResponse> => {
+    search: async (
+      companyId: string,
+      query: CompanySearchQuery,
+      // [stenas:agent-visibility] restricted actors only match visible issues/agents.
+      opts: { visibility?: AgentVisibility } = {},
+    ): Promise<CompanySearchResponse> => {
+      const visibilityIssueCondition = agentVisibilityIssueCondition(opts.visibility);
+      const visibilityAgentCondition = agentVisibilityAgentCondition(opts.visibility, agents.id);
       const taskSearch = parseTaskSearch(query.q);
       const normalizedQuery = taskSearch.normalizedQuery;
       const hasSearchText = normalizedQuery.length > 0;
@@ -568,7 +581,10 @@ export function companySearchService(db: Db) {
       const containsPattern = hasSearchText && tokens.length > 0 ? taskSearch.containsPattern : "__paperclip_no_match__";
       const tokenCount = tokens.length;
 
-      const issueFilters = issueFilterConditions(companyId, query);
+      const issueFilters = [
+        ...issueFilterConditions(companyId, query),
+        ...(visibilityIssueCondition ? [visibilityIssueCondition] : []),
+      ];
       const hasIssueOnlyFilters = issueOnlyFiltersActive(query);
 
       // Scope conditions over precomputed flag columns (alias-qualified).
@@ -717,7 +733,7 @@ export function companySearchService(db: Db) {
         }
 
         const resultRows = await db.execute(sql`
-          ${taskSearchCtes(companyId, taskSearch, scope !== "issues", and(...issueFilters))}
+          ${taskSearchCtes(companyId, taskSearch, scope !== "issues", and(...issueFilters), visibilityIssueCondition)}
           ${sql.join(branches, sql` UNION ALL `)}
         `) as unknown as Array<SearchAggregateRow & Omit<IssueSearchRow, "commentSnippet" | "commentId" | "documentSnippet" | "documentTitle" | "documentKey">>;
 
@@ -880,7 +896,7 @@ export function companySearchService(db: Db) {
             updatedAt: agents.updatedAt,
           })
           .from(agents)
-          .where(and(eq(agents.companyId, companyId), simpleCondition))
+          .where(and(eq(agents.companyId, companyId), simpleCondition, visibilityAgentCondition))
           .orderBy(desc(agents.updatedAt), desc(agents.id))
           .limit(fetchLimit);
       }
@@ -908,6 +924,7 @@ export function companySearchService(db: Db) {
           eq(issues.companyId, companyId),
           visibleIssueCondition(),
           ...artifactIssueFilters,
+          ...(visibilityIssueCondition ? [visibilityIssueCondition] : []),
         ];
         const documentArtifactConditions = [
           eq(issueDocuments.companyId, companyId),
@@ -974,7 +991,7 @@ export function companySearchService(db: Db) {
         const rows = await db
           .select({ count: sql<number>`count(*)::int` })
           .from(agents)
-          .where(and(eq(agents.companyId, companyId), simpleCondition));
+          .where(and(eq(agents.companyId, companyId), simpleCondition, visibilityAgentCondition));
         return Number(rows[0]?.count ?? 0);
       }
 

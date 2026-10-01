@@ -1324,6 +1324,9 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "PATCH /api/companies/{companyId}/members/{memberId}/role-and-grants",
   "POST /api/companies/{companyId}/members/{memberId}/archive",
   "PATCH /api/companies/{companyId}/members/{memberId}/permissions",
+  // [stenas:agent-visibility]
+  "GET /api/companies/{companyId}/members/{memberId}/agent-access",
+  "PUT /api/companies/{companyId}/members/{memberId}/agent-access",
   "GET /api/companies/{companyId}/user-directory",
   "GET /api/companies/{companyId}/managed-agent-profiles",
   "POST /api/companies/{companyId}/managed-agent-profiles",
@@ -6187,6 +6190,28 @@ registry.registerPath({
     401: r.unauthorized,
     404: r.notFound,
   },
+});
+
+// [stenas:agent-visibility] Owner-managed agent access for restricted members.
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/members/{memberId}/agent-access",
+  tags: ["access"],
+  summary: "Get the agents a restricted company member may see",
+  request: { params: z.object({ companyId: z.string(), memberId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/members/{memberId}/agent-access",
+  tags: ["access"],
+  summary: "Replace the agents a restricted company member may see",
+  request: {
+    params: z.object({ companyId: z.string(), memberId: z.string() }),
+    body: jsonBody(z.object({ agentIds: z.array(z.string().uuid()).max(500) })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({

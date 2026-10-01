@@ -105,6 +105,15 @@ import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { isFixedClaudeOAuthBinding, secretService } from "../services/secrets.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
+// [stenas:agent-visibility]
+import {
+  agentVisibilityService,
+  filterRunsForVisibility,
+  isAgentVisible,
+  pruneOrgTreeForVisibility,
+  redactHiddenManager,
+  resolveEffectiveAgentVisibility,
+} from "../services/agent-visibility.js";
 import { providerTraceStore } from "../services/provider-trace-store.js";
 import {
   persistReprojectedWorkspaceDiffs,
@@ -1130,13 +1139,27 @@ export function agentRoutes(
     return false;
   }
 
-  async function assertRunTelemetryReadAllowed(req: Request, res: Response, companyId: string) {
+  async function assertRunTelemetryReadAllowed(
+    req: Request,
+    res: Response,
+    companyId: string,
+    opts: { allowRestricted?: boolean } = {},
+  ) {
     const decision = await access.decide({
       actor: req.actor,
       action: "company_scope:read",
       resource: { type: "company", companyId },
     });
     if (decision.allowed) return true;
+    // [stenas:agent-visibility] restricted users may read run telemetry: run
+    // lists are filtered below and per-run routes are guarded centrally.
+    if (
+      opts.allowRestricted !== false &&
+      decision.reason === "deny_scope" &&
+      (await resolveEffectiveAgentVisibility(db, req.actor, companyId)).restricted
+    ) {
+      return true;
+    }
     res.status(403).json({ error: "Run telemetry is outside this actor's authorization boundary" });
     return false;
   }
@@ -3972,7 +3995,10 @@ export function agentRoutes(
       });
       return;
     }
-    const result = await filterAgentsForActor(req, await svc.list(companyId));
+    // [stenas:agent-visibility] hidden agents are filtered by agent:read; also hide hidden managers.
+    const listVisibility = await resolveEffectiveAgentVisibility(db, req.actor, companyId);
+    const result = (await filterAgentsForActor(req, await svc.list(companyId)))
+      .map((agent) => redactHiddenManager(agent, listVisibility));
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
       res.json(result.map((agent) => redactAgentRowForResponse(agent)));
@@ -4044,10 +4070,43 @@ export function agentRoutes(
     res.json(items);
   });
 
+  // [stenas:agent-visibility] a restricted board user who may create agents
+  // keeps access to the agents they create.
+  async function autoGrantCreatedAgent(req: Request, companyId: string, agentId: string) {
+    if (req.actor.type !== "board" || !req.actor.userId) return;
+    const visibility = await resolveEffectiveAgentVisibility(db, req.actor, companyId);
+    if (!visibility.restricted) return;
+    const result = await agentVisibilityService(db).grantAgent(companyId, req.actor.userId, agentId, req.actor.userId);
+    if (result.previous.length === result.next.length) return;
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: req.actor.userId,
+      action: "company_member.agent_access_auto_granted",
+      entityType: "agent",
+      entityId: agentId,
+      details: { principalId: req.actor.userId, agentIds: result.next, addedAgentIds: [agentId] },
+    });
+  }
+
+  // [stenas:agent-visibility] prune hidden agents at every depth (promoting
+  // visible reports); upstream only filtered the top level.
+  async function visibleOrgTree(req: Request, companyId: string) {
+    const visibility = await resolveEffectiveAgentVisibility(db, req.actor, companyId);
+    const raw = await svc.orgForCompany(companyId);
+    if (visibility.restricted) {
+      return pruneOrgTreeForVisibility(
+        raw as unknown as Array<{ id: string; reports?: never[] } & Record<string, unknown>>,
+        visibility,
+      ) as unknown as typeof raw;
+    }
+    return filterAgentsForActor(req, raw, companyId);
+  }
+
   router.get("/companies/:companyId/org", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const tree = await filterAgentsForActor(req, await svc.orgForCompany(companyId), companyId);
+    const tree = await visibleOrgTree(req, companyId);
     const leanTree = tree.map((node) => toLeanOrgNode(node as Record<string, unknown>));
     res.json(leanTree);
   });
@@ -4056,7 +4115,7 @@ export function agentRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const style = (ORG_CHART_STYLES.includes(req.query.style as OrgChartStyle) ? req.query.style : "warmth") as OrgChartStyle;
-    const tree = await filterAgentsForActor(req, await svc.orgForCompany(companyId), companyId);
+    const tree = await visibleOrgTree(req, companyId);
     const leanTree = tree.map((node) => toLeanOrgNode(node as Record<string, unknown>));
     const svg = renderOrgChartSvg(leanTree as unknown as OrgNode[], style);
     res.setHeader("Content-Type", "image/svg+xml");
@@ -4068,7 +4127,7 @@ export function agentRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const style = (ORG_CHART_STYLES.includes(req.query.style as OrgChartStyle) ? req.query.style : "warmth") as OrgChartStyle;
-    const tree = await filterAgentsForActor(req, await svc.orgForCompany(companyId), companyId);
+    const tree = await visibleOrgTree(req, companyId);
     const leanTree = tree.map((node) => toLeanOrgNode(node as Record<string, unknown>));
     const png = await renderOrgChartPng(leanTree as unknown as OrgNode[], style);
     res.setHeader("Content-Type", "image/png");
@@ -4079,7 +4138,9 @@ export function agentRoutes(
   router.get("/companies/:companyId/agent-configurations", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCanReadConfigurations(req, companyId);
-    const rows = await svc.list(companyId);
+    // [stenas:agent-visibility]
+    const configurationsVisibility = await resolveEffectiveAgentVisibility(db, req.actor, companyId);
+    const rows = (await svc.list(companyId)).filter((row) => isAgentVisible(configurationsVisibility, row.id));
     res.json(rows.map((row) => redactAgentConfiguration(row)));
   });
 
@@ -4207,11 +4268,23 @@ export function agentRoutes(
     const canReadSensitiveDetail = isSelf
       ? true
       : await actorCanReadConfigurationsForCompany(req, agent.companyId);
+    // [stenas:agent-visibility] hide hidden managers in the chain of command.
+    const detailVisibility = await resolveEffectiveAgentVisibility(db, req.actor, agent.companyId);
+    const visibleDetail = <T extends { chainOfCommand?: Array<{ id: string }>; reportsTo?: string | null }>(detail: T): T =>
+      redactHiddenManager(
+        {
+          ...detail,
+          ...(Array.isArray(detail.chainOfCommand)
+            ? { chainOfCommand: detail.chainOfCommand.filter((entry) => isAgentVisible(detailVisibility, entry.id)) }
+            : {}),
+        },
+        detailVisibility,
+      );
     if (!canReadSensitiveDetail) {
-      res.json(await buildAgentDetail(agent, { restricted: true }));
+      res.json(visibleDetail(await buildAgentDetail(agent, { restricted: true })));
       return;
     }
-    res.json(await buildAgentDetail(agent));
+    res.json(visibleDetail(await buildAgentDetail(agent)));
   });
 
   router.get("/agents/:id/configuration", async (req, res) => {
@@ -4641,6 +4714,8 @@ export function agentRoutes(
           hireFingerprint: requestFingerprint,
         },
       });
+      // [stenas:agent-visibility]
+      await autoGrantCreatedAgent(req, companyId, agent.id);
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         trackAgentCreated(telemetryClient, { agentRole: agent.role, agentId: agent.id });
@@ -4818,6 +4893,8 @@ export function agentRoutes(
         desiredSkills: desiredSkillAssignment.desiredSkills,
       },
     });
+    // [stenas:agent-visibility]
+    await autoGrantCreatedAgent(req, companyId, agent.id);
     const telemetryClient = getTelemetryClient();
     if (telemetryClient) {
       trackAgentCreated(telemetryClient, { agentRole: agent.role, agentId: agent.id });
@@ -6541,7 +6618,17 @@ export function agentRoutes(
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const summary = req.query.summary === "true" || req.query.summary === "1";
-    const runs = await heartbeat.list(companyId, agentId, limit, { summary });
+    // [stenas:agent-visibility]
+    const runsVisibility = await resolveEffectiveAgentVisibility(db, req.actor, companyId);
+    if (agentId && !isAgentVisible(runsVisibility, agentId)) {
+      res.json([]);
+      return;
+    }
+    const runs = await filterRunsForVisibility(
+      db,
+      runsVisibility,
+      await heartbeat.list(companyId, agentId, limit, { summary }),
+    );
     res.json(await runRedactions.redactForRuns(companyId, runs));
   });
 
@@ -6628,7 +6715,9 @@ export function agentRoutes(
       )
       .orderBy(desc(heartbeatRuns.createdAt));
 
-    const liveRuns = await liveRunsQuery.limit(limit);
+    // [stenas:agent-visibility]
+    const liveRunsVisibility = await resolveEffectiveAgentVisibility(db, req.actor, companyId);
+    const liveRuns = await filterRunsForVisibility(db, liveRunsVisibility, await liveRunsQuery.limit(limit));
     const targetRunCount = Math.min(minCount, limit);
 
     if (targetRunCount > 0 && liveRuns.length < targetRunCount) {
@@ -6647,7 +6736,7 @@ export function agentRoutes(
         .orderBy(desc(heartbeatRuns.createdAt))
         .limit(targetRunCount - liveRuns.length);
 
-      const rows = [...liveRuns, ...recentRuns];
+      const rows = [...liveRuns, ...(await filterRunsForVisibility(db, liveRunsVisibility, recentRuns))];
       const projections = await executionProjectionsForRuns(db, companyId, rows.map(run => run.id));
       res.json(await runRedactions.redactForRuns(companyId, await Promise.all(rows.map(async (run) => ({
         ...heartbeat.decorateActiveRunStatus(run),
@@ -7191,7 +7280,8 @@ export function agentRoutes(
     const operationId = req.params.operationId as string;
     const operation = await getAccessibleResource(req, res, workspaceOperations.getById(operationId), "Workspace operation not found");
     if (!operation) return;
-    if (!(await assertRunTelemetryReadAllowed(req, res, operation.companyId))) return;
+    // [stenas:agent-visibility] not guarded per run; closed to restricted users.
+    if (!(await assertRunTelemetryReadAllowed(req, res, operation.companyId, { allowRestricted: false }))) return;
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
@@ -7254,8 +7344,11 @@ export function agentRoutes(
       )
       .orderBy(desc(heartbeatRuns.createdAt));
 
-    const projections = await executionProjectionsForRuns(db, issue.companyId, liveRuns.map(run => run.id));
-    res.json(await Promise.all(liveRuns.map(async (run) => ({
+    // [stenas:agent-visibility] drop runs of agents hidden from the actor.
+    const issueRunsVisibility = await resolveEffectiveAgentVisibility(db, req.actor, issue.companyId);
+    const visibleIssueRuns = liveRuns.filter((run) => isAgentVisible(issueRunsVisibility, run.agentId));
+    const projections = await executionProjectionsForRuns(db, issue.companyId, visibleIssueRuns.map(run => run.id));
+    res.json(await Promise.all(visibleIssueRuns.map(async (run) => ({
       ...heartbeat.decorateActiveRunStatus(run, { companyId: issue.companyId, issueId: issue.id }),
       execution: projections.get(run.id) ?? null,
       outputSilence: await heartbeat.buildRunOutputSilence({ ...run, companyId: issue.companyId }),
@@ -7269,6 +7362,11 @@ export function agentRoutes(
       eq(heartbeatRuns.companyId, issue.companyId),
       sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
     )).orderBy(sql`case when ${heartbeatRuns.id} = ${issue.executionRunId} then 0 when ${heartbeatRuns.status} = 'running' then 1 else 2 end`, desc(heartbeatRuns.createdAt)).limit(1);
+    // [stenas:agent-visibility]
+    if (run && !isAgentVisible(await resolveEffectiveAgentVisibility(db, req.actor, issue.companyId), run.agentId)) {
+      res.json(null);
+      return;
+    }
     res.json(run ? { runId: run.id, agentId: run.agentId, recoveryAction: await issueRecoveryActionService(db).getActiveForIssue(issue.companyId, issue.id), execution: await executionProjectionForRun(db, issue.companyId, run.id) } : null);
   });
 
@@ -7308,7 +7406,8 @@ export function agentRoutes(
     }
 
     const agent = await svc.getById(run.agentId);
-    if (!agent) {
+    // [stenas:agent-visibility]
+    if (!agent || !isAgentVisible(await resolveEffectiveAgentVisibility(db, req.actor, issue.companyId), agent.id)) {
       res.json(null);
       return;
     }

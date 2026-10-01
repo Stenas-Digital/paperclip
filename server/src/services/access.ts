@@ -19,6 +19,14 @@ import { conflict } from "../errors.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { authorizationService, type AuthorizationActor, type AuthorizationResource } from "./authorization.js";
 import { ensureHumanRoleDefaultGrants } from "./principal-access-compatibility.js";
+// [stenas:agent-visibility]
+import { AGENT_ACCESS_PERMISSION_KEY } from "./agent-visibility.js";
+
+// [stenas:agent-visibility] Grant replace-all paths never write or delete the
+// agent-access grant; only the dedicated agent-access route manages it.
+function withoutReservedGrants<T extends { permissionKey: string }>(grants: T[]): T[] {
+  return grants.filter((grant) => grant.permissionKey !== AGENT_ACCESS_PERMISSION_KEY);
+}
 
 type MembershipRow = typeof companyMemberships.$inferSelect;
 type GrantInput = {
@@ -459,11 +467,14 @@ export function accessService(db: Db) {
             eq(principalPermissionGrants.companyId, companyId),
             eq(principalPermissionGrants.principalType, member.principalType),
             eq(principalPermissionGrants.principalId, member.principalId),
+            // [stenas:agent-visibility] agent access is managed by its own route.
+            ne(principalPermissionGrants.permissionKey, AGENT_ACCESS_PERMISSION_KEY),
           ),
         );
-      if (grants.length > 0) {
+      const replaceableGrants = withoutReservedGrants(grants);
+      if (replaceableGrants.length > 0) {
         await tx.insert(principalPermissionGrants).values(
-          grants.map((grant) => ({
+          replaceableGrants.map((grant) => ({
             companyId,
             principalType: member.principalType,
             principalId: member.principalId,
@@ -558,11 +569,14 @@ export function accessService(db: Db) {
             eq(principalPermissionGrants.companyId, companyId),
             eq(principalPermissionGrants.principalType, existing.principalType),
             eq(principalPermissionGrants.principalId, existing.principalId),
+            // [stenas:agent-visibility] agent access is managed by its own route.
+            ne(principalPermissionGrants.permissionKey, AGENT_ACCESS_PERMISSION_KEY),
           ),
         );
-      if (data.grants.length > 0) {
+      const replaceableGrants = withoutReservedGrants(data.grants);
+      if (replaceableGrants.length > 0) {
         await tx.insert(principalPermissionGrants).values(
-          data.grants.map((grant) => ({
+          replaceableGrants.map((grant) => ({
             companyId,
             principalType: existing.principalType,
             principalId: existing.principalId,
@@ -917,11 +931,14 @@ export function accessService(db: Db) {
             eq(principalPermissionGrants.companyId, companyId),
             eq(principalPermissionGrants.principalType, principalType),
             eq(principalPermissionGrants.principalId, principalId),
+            // [stenas:agent-visibility] agent access is managed by its own route.
+            ne(principalPermissionGrants.permissionKey, AGENT_ACCESS_PERMISSION_KEY),
           ),
         );
-      if (grants.length === 0) return;
+      const replaceableGrants = withoutReservedGrants(grants);
+      if (replaceableGrants.length === 0) return;
       await tx.insert(principalPermissionGrants).values(
-        grants.map((grant) => ({
+        replaceableGrants.map((grant) => ({
           companyId,
           principalType,
           principalId,

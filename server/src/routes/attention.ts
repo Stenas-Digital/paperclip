@@ -4,6 +4,9 @@ import type { AttentionSortMode } from "@paperclipai/shared";
 import { attentionService } from "../services/attention.js";
 import { badRequest } from "../errors.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
+// [stenas:agent-visibility]
+import { resolveEffectiveAgentVisibility } from "../services/agent-visibility.js";
+import { canReadDecisionSource } from "../services/decision-queues.js";
 
 function optionalQueryString(value: unknown, field: string) {
   if (value === undefined) return undefined;
@@ -51,6 +54,27 @@ export function attentionRoutes(db: Db) {
       sort: sortValue as AttentionSortMode | undefined,
       limit,
     });
+    // [stenas:agent-visibility] drop items whose source is hidden from a
+    // restricted user and adjust the counters by what was removed (page-local).
+    const attentionVisibility = await resolveEffectiveAgentVisibility(db, req.actor, companyId);
+    if (attentionVisibility.restricted) {
+      const readable = await Promise.all(
+        feed.items.map((item) => canReadDecisionSource(db, req.actor, companyId, item.sourceKind, item.subject.id)),
+      );
+      const removed = feed.items.filter((_, index) => !readable[index]);
+      const countsBySourceKind = { ...feed.countsBySourceKind };
+      for (const item of removed) {
+        countsBySourceKind[item.sourceKind] = Math.max(0, (countsBySourceKind[item.sourceKind] ?? 0) - 1);
+      }
+      res.json({
+        ...feed,
+        items: feed.items.filter((_, index) => readable[index]),
+        totalCount: Math.max(0, feed.totalCount - removed.length),
+        deskBadgeCount: Math.max(0, feed.deskBadgeCount - removed.length),
+        countsBySourceKind,
+      });
+      return;
+    }
     res.json(feed);
   });
 

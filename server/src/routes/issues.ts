@@ -277,6 +277,13 @@ import {
   type IssuePostCommitAction,
 } from "../services/issues.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
+// [stenas:agent-visibility]
+import {
+  filterVisibleAgentIds,
+  resolveEffectiveAgentVisibility,
+  type AgentVisibility,
+} from "../services/agent-visibility.js";
+import { filterVisibleIssues, redactIssueRelations } from "./agent-visibility-redaction.js";
 import { stalledReviewDecisionService } from "../services/stalled-review-decisions.js";
 import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
@@ -468,6 +475,8 @@ type CompanySearchService = {
   search(
     companyId: string,
     query: CompanySearchQuery,
+    // [stenas:agent-visibility]
+    opts?: { visibility?: AgentVisibility },
   ): Promise<CompanySearchResponse>;
 };
 type ActivityIssueRelationSummary = {
@@ -7823,7 +7832,12 @@ export function issueRoutes(
       action: "company_scope:read",
       resource: { type: "company", companyId },
     });
-    if (!companyScopeDecision.allowed) {
+    // [stenas:agent-visibility] restricted users search only what they can see.
+    const searchVisibility = await resolveEffectiveAgentVisibility(db, req.actor, companyId);
+    if (
+      !companyScopeDecision.allowed &&
+      !(companyScopeDecision.reason === "deny_scope" && searchVisibility.restricted)
+    ) {
       res.status(403).json({
         error: "Company search is outside this actor's authorization boundary",
       });
@@ -7859,7 +7873,7 @@ export function issueRoutes(
       });
       return;
     }
-    const result = await getSearchService().search(companyId, query);
+    const result = await getSearchService().search(companyId, query, { visibility: searchVisibility });
     res.json(result);
   });
 
@@ -8095,6 +8109,13 @@ export function issueRoutes(
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
       updatedSince: rawUpdatedSince,
     };
+    // [stenas:agent-visibility] restricted actors get SQL-level filtering.
+    const listAgentVisibility = await resolveEffectiveAgentVisibility(db, req.actor, companyId);
+    if (listAgentVisibility.restricted) {
+      listFilters.agentVisibility = {
+        allowedAgentIds: [...listAgentVisibility.allowedAgentIds],
+      };
+    }
     const requestKey = issueListRequestKey({
       req,
       companyId,
@@ -8111,9 +8132,12 @@ export function issueRoutes(
       diagnostics: opts.issueListDiagnostics,
       compute: async () => {
         const rawResult = await svc.list(companyId, listFilters);
-        const result = (await actorCanReadCompanyScope(req, companyId))
-          ? rawResult
-          : await filterIssuesForActor(req, rawResult);
+        // [stenas:agent-visibility] already filtered in SQL; also drop hidden embedded relations.
+        const result = listAgentVisibility.restricted
+          ? rawResult.map((issue) => redactIssueRelations(listAgentVisibility, issue))
+          : (await actorCanReadCompanyScope(req, companyId))
+            ? rawResult
+            : await filterIssuesForActor(req, rawResult);
         const issueIds = result.map((issue) => issue.id);
         if (compactView) {
           const [handoffStates, recoveryActionByIssue] = await Promise.all([
@@ -8309,6 +8333,17 @@ export function issueRoutes(
       hasPlanDocument,
       q: req.query.q as string | undefined,
     } as const;
+
+    // [stenas:agent-visibility] restricted actors count in SQL.
+    const countAgentVisibility = await resolveEffectiveAgentVisibility(db, req.actor, companyId);
+    if (countAgentVisibility.restricted) {
+      const count = await svc.count(companyId, {
+        ...blockedCountFilters,
+        agentVisibility: { allowedAgentIds: [...countAgentVisibility.allowedAgentIds] },
+      });
+      res.json({ count });
+      return;
+    }
 
     if (!(await actorCanReadCompanyScope(req, companyId))) {
       const trustResolution =
@@ -8596,6 +8631,8 @@ export function issueRoutes(
       includeForIssueComment: wakeCommentId !== null,
     });
 
+    // [stenas:agent-visibility]
+    const heartbeatContextVisibility = await resolveEffectiveAgentVisibility(db, req.actor, issue.companyId);
     const response = {
       issue: {
         id: issue.id,
@@ -8612,15 +8649,15 @@ export function issueRoutes(
         projectId: issue.projectId,
         goalId: goal?.id ?? issue.goalId,
         parentId: issue.parentId,
-        blockedBy: relationsWithRecoveryActions.blockedBy,
-        blocks: relationsWithRecoveryActions.blocks,
+        blockedBy: filterVisibleIssues(heartbeatContextVisibility, relationsWithRecoveryActions.blockedBy),
+        blocks: filterVisibleIssues(heartbeatContextVisibility, relationsWithRecoveryActions.blocks),
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
         originKind: issue.originKind,
         originId: issue.originId,
         updatedAt: issue.updatedAt,
       },
-      ancestors: ancestors.map((ancestor) => ({
+      ancestors: filterVisibleIssues(heartbeatContextVisibility, ancestors).map((ancestor) => ({
         id: ancestor.id,
         identifier: ancestor.identifier,
         title: ancestor.title,
@@ -8903,7 +8940,9 @@ export function issueRoutes(
       "Server-Timing",
       `paperclip_issue;dur=${(performance.now() - requestStartedAt).toFixed(1)}`,
     );
-    res.json({
+    // [stenas:agent-visibility] drop hidden ancestors/blockers/related work.
+    const detailAgentVisibility = await resolveEffectiveAgentVisibility(db, req.actor, issue.companyId);
+    res.json(redactIssueRelations(detailAgentVisibility, {
       ...issue,
       ...inboxArchiveFields,
       goalId: goal?.id ?? issue.goalId,
@@ -8930,7 +8969,7 @@ export function issueRoutes(
       workProducts,
       linkedCases,
       externalChannelBinding,
-    });
+    }));
   });
 
   router.get("/issues/:id/watchdog", async (req, res) => {
@@ -14670,6 +14709,11 @@ export function issueRoutes(
           } catch (err) {
             logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
           }
+          // [stenas:agent-visibility] silently skip agents hidden from the actor.
+          mentionedIds = filterVisibleAgentIds(
+            await resolveEffectiveAgentVisibility(db, req.actor, issue.companyId),
+            mentionedIds,
+          );
 
           for (const mentionedId of mentionedIds) {
             if (
@@ -18083,6 +18127,11 @@ export function issueRoutes(
         } catch (err) {
           logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
         }
+        // [stenas:agent-visibility] silently skip agents hidden from the actor.
+        mentionedIds = filterVisibleAgentIds(
+          await resolveEffectiveAgentVisibility(db, req.actor, issue.companyId),
+          mentionedIds,
+        );
 
         for (const mentionedId of mentionedIds) {
           if (

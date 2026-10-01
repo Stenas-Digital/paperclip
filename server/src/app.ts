@@ -22,6 +22,9 @@ import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
+// [stenas:agent-visibility]
+import { agentVisibilityGuardRoutes } from "./routes/agent-visibility-guard.js";
+import { agentAccessRoutes } from "./routes/agent-access.js";
 import {
   privateHostnameGuard,
   resolvePrivateHostnameAllowSet,
@@ -624,6 +627,9 @@ export async function createApp(
   // Mount API routes
   const api = Router();
   api.use(boardMutationGuard());
+  // [stenas:agent-visibility] must stay ahead of every entity router.
+  api.use(agentVisibilityGuardRoutes(db));
+  api.use(agentAccessRoutes(db));
   api.use(
     "/health",
     healthRoutes(db, {

@@ -18,6 +18,8 @@ import { assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAcc
 import { forbidden, unauthorized } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+// [stenas:agent-visibility]
+import { isAgentVisible, resolveEffectiveAgentVisibility } from "../services/agent-visibility.js";
 
 export function routineRoutes(
   db: Db,
@@ -86,13 +88,24 @@ export function routineRoutes(
     }
   }
 
-  async function assertBoardCanAssignTasks(req: Request, companyId: string) {
+  async function assertBoardCanAssignTasks(
+    req: Request,
+    companyId: string,
+    // [stenas:agent-visibility] routine target agent must be visible to the actor.
+    assigneeAgentId?: string | null,
+  ) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type !== "board") return;
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
     const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
     if (!allowed) {
       throw forbidden("Missing permission: tasks:assign");
+    }
+    if (
+      assigneeAgentId &&
+      !isAgentVisible(await resolveEffectiveAgentVisibility(db, req.actor, companyId), assigneeAgentId)
+    ) {
+      throw forbidden("Agent is not visible to this user (restricted agent visibility).");
     }
   }
 
@@ -156,7 +169,7 @@ export function routineRoutes(
 
   router.post("/companies/:companyId/routines", validate(createRoutineSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    await assertBoardCanAssignTasks(req, companyId);
+    await assertBoardCanAssignTasks(req, companyId, req.body.assigneeAgentId);
     assertCanManageCompanyRoutine(req, companyId, req.body.assigneeAgentId);
     const created = await svc.create(companyId, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
@@ -370,14 +383,14 @@ export function routineRoutes(
       req.body.assigneeAgentId !== undefined &&
       req.body.assigneeAgentId !== routine.assigneeAgentId;
     if (assigneeWillChange) {
-      await assertBoardCanAssignTasks(req, routine.companyId);
+      await assertBoardCanAssignTasks(req, routine.companyId, req.body.assigneeAgentId);
     }
     const statusWillActivate =
       req.body.status !== undefined &&
       req.body.status === "active" &&
       routine.status !== "active";
     if (statusWillActivate) {
-      await assertBoardCanAssignTasks(req, routine.companyId);
+      await assertBoardCanAssignTasks(req, routine.companyId, routine.assigneeAgentId);
     }
     if (
       req.actor.type === "agent" &&
@@ -424,7 +437,7 @@ export function routineRoutes(
       res.status(404).json({ error: "Routine not found" });
       return;
     }
-    await assertBoardCanAssignTasks(req, routine.companyId);
+    await assertBoardCanAssignTasks(req, routine.companyId, routine.assigneeAgentId);
     const result = await svc.restoreRevision(routine.id, req.params.revisionId as string, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
@@ -467,7 +480,7 @@ export function routineRoutes(
       res.status(404).json({ error: "Routine not found" });
       return;
     }
-    await assertBoardCanAssignTasks(req, routine.companyId);
+    await assertBoardCanAssignTasks(req, routine.companyId, routine.assigneeAgentId);
     const created = await svc.createTrigger(routine.id, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
@@ -508,7 +521,7 @@ export function routineRoutes(
       res.status(404).json({ error: "Routine trigger not found" });
       return;
     }
-    await assertBoardCanAssignTasks(req, routine.companyId);
+    await assertBoardCanAssignTasks(req, routine.companyId, routine.assigneeAgentId);
     const updated = await svc.updateTrigger(trigger.id, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
@@ -632,7 +645,7 @@ export function routineRoutes(
       res.status(404).json({ error: "Routine not found" });
       return;
     }
-    await assertBoardCanAssignTasks(req, routine.companyId);
+    await assertBoardCanAssignTasks(req, routine.companyId, routine.assigneeAgentId);
     const run = await svc.runRoutine(routine.id, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? null : null,

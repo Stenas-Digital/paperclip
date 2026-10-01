@@ -69,6 +69,11 @@ import { getHiddenSettings } from "../services/settings-visibility.js";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { COMPANY_IMPORT_ROUTE_PATH } from "./company-import-paths.js";
+// [stenas:agent-visibility]
+import {
+  agentVisibilityIssueCondition,
+  resolveEffectiveAgentVisibility,
+} from "../services/agent-visibility.js";
 
 // A company import can arrive one of two ways on the import + preview routes:
 //   • application/json — the original inline body `{ source, target, ... }`,
@@ -421,8 +426,13 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const query = companyArtifactsQuerySchema.parse(req.query);
+    // [stenas:agent-visibility] only artifacts of visible issues.
+    const artifactsIssueCondition = agentVisibilityIssueCondition(
+      await resolveEffectiveAgentVisibility(db, req.actor, companyId),
+    );
     res.json(await artifacts.list(companyId, query, {
       userId: query.starred && req.actor.type === "board" ? req.actor.userId : undefined,
+      ...(artifactsIssueCondition ? { issueConditions: [artifactsIssueCondition] } : {}),
     }));
   });
 

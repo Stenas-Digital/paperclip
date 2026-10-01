@@ -131,6 +131,15 @@ export type CompanyMember = {
   };
 };
 
+// [stenas:agent-visibility]
+export type MemberAgentAccess = {
+  memberId: string;
+  principalId: string;
+  membershipRole: HumanCompanyRole | null;
+  restrictedByRole: boolean;
+  agentIds: string[];
+};
+
 export type ArchiveCompanyMemberResponse = {
   member: CompanyMember;
   reassignedIssueCount: number;
@@ -353,6 +362,13 @@ export const accessApi = {
       }>;
     },
   ) => api.patch<CompanyMember>(`/companies/${companyId}/members/${memberId}/role-and-grants`, input),
+
+  // [stenas:agent-visibility] Owner-managed agent access for restricted members.
+  getMemberAgentAccess: (companyId: string, memberId: string) =>
+    api.get<MemberAgentAccess>(`/companies/${companyId}/members/${memberId}/agent-access`),
+
+  updateMemberAgentAccess: (companyId: string, memberId: string, agentIds: string[]) =>
+    api.put<MemberAgentAccess>(`/companies/${companyId}/members/${memberId}/agent-access`, { agentIds }),
 
   archiveMember: (
     companyId: string,

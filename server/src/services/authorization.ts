@@ -30,6 +30,8 @@ import {
 import { logger } from "../middleware/logger.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { grantsForHumanRole, normalizeHumanRole } from "./company-member-roles.js";
+// [stenas:agent-visibility]
+import { decideAgentVisibilityForBoard } from "./agent-visibility.js";
 
 export type AuthorizationActor =
   {
@@ -47,6 +49,9 @@ export type AuthorizationActor =
     keyScope?: AgentApiKeyScope | null;
     runId?: string | null;
     onBehalfOfUserId?: string | null;
+    // [stenas:agent-visibility] Set on the responsible-user intersection's
+    // synthetic board actor: the agent acting on that user's behalf.
+    delegatedByAgentId?: string | null;
     source?:
       | "local_implicit"
       | "session"
@@ -1665,6 +1670,24 @@ export function authorizationService(db: Db | DbTransaction) {
           explanation: "Allowed because the actor is an instance admin.",
         });
       }
+      // [stenas:agent-visibility] Restricted users only see granted agents and
+      // the issues assigned to them. Runs before every board allow below.
+      const agentVisibilityDenial = await decideAgentVisibilityForBoard(db, {
+        actor: input.actor,
+        action: input.action,
+        resource: input.resource,
+        loadIssueAssignee: async (issueId) => {
+          const issue = await loadIssue(issueId);
+          return issue ? { companyId: issue.companyId, assigneeAgentId: issue.assigneeAgentId } : null;
+        },
+      });
+      if (agentVisibilityDenial) {
+        return deny({
+          action: input.action,
+          reason: "deny_scope",
+          explanation: agentVisibilityDenial.explanation,
+        });
+      }
       // What instance-admin elevation used to give cloud tenant users is
       // replaced by company-scoped visibility: an active membership in the
       // resource company grants the same read surface a same-company agent
@@ -2351,6 +2374,8 @@ export function authorizationService(db: Db | DbTransaction) {
             isInstanceAdmin: false,
             ignoreInstanceAdmin: true,
             source: "session",
+            // [stenas:agent-visibility]
+            delegatedByAgentId: input.actor.agentId ?? null,
           },
         })
       : deny({

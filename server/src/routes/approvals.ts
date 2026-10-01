@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
-import { eq } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { and, eq, inArray } from "drizzle-orm";
+import { heartbeatRuns, issueApprovals, issues, type Db } from "@paperclipai/db";
 import {
   addApprovalCommentSchema,
   createApprovalSchema,
@@ -23,6 +23,12 @@ import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { issueService } from "../services/issues.js";
 import { REVIEW_PATH_RECOVERY_INSTRUCTION } from "../services/recovery/review-path-recovery.js";
+// [stenas:agent-visibility]
+import {
+  isAgentVisible,
+  isIssueVisible,
+  resolveEffectiveAgentVisibility,
+} from "../services/agent-visibility.js";
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
   return {
@@ -168,6 +174,14 @@ export function approvalRoutes(
       resource: { type: "company", companyId },
     });
     if (decision.allowed) return true;
+    // [stenas:agent-visibility] restricted users see approvals of visible agents
+    // only (list filtered below; single approvals guarded centrally).
+    if (
+      decision.reason === "deny_scope" &&
+      (await resolveEffectiveAgentVisibility(db, req.actor, companyId)).restricted
+    ) {
+      return true;
+    }
     res.status(403).json({ error: "Approvals are outside this actor's authorization boundary" });
     return false;
   }
@@ -207,7 +221,26 @@ export function approvalRoutes(
     assertCompanyAccess(req, companyId);
     if (!(await assertApprovalAccessAllowed(req, res, companyId))) return;
     const status = req.query.status as string | undefined;
-    const result = await svc.list(companyId, status);
+    // [stenas:agent-visibility]
+    const approvalsVisibility = await resolveEffectiveAgentVisibility(db, req.actor, companyId);
+    let result = await svc.list(companyId, status);
+    if (approvalsVisibility.restricted) {
+      result = result.filter(
+        (approval) => !approval.requestedByAgentId || isAgentVisible(approvalsVisibility, approval.requestedByAgentId),
+      );
+      const approvalIds = result.map((approval) => approval.id);
+      const linked = approvalIds.length
+        ? await db
+          .select({ approvalId: issueApprovals.approvalId, assigneeAgentId: issues.assigneeAgentId })
+          .from(issueApprovals)
+          .innerJoin(issues, eq(issues.id, issueApprovals.issueId))
+          .where(and(eq(issueApprovals.companyId, companyId), inArray(issueApprovals.approvalId, approvalIds)))
+        : [];
+      const hiddenApprovalIds = new Set(
+        linked.filter((row) => !isIssueVisible(approvalsVisibility, row)).map((row) => row.approvalId),
+      );
+      result = result.filter((approval) => !hiddenApprovalIds.has(approval.id));
+    }
     res.json(result.map((approval) => redactApprovalPayload(approval)));
   });
 

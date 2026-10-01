@@ -16,6 +16,8 @@ const apiPrefixes: Record<string, string> = {
   "cases.ts": "/api",
   "smoke-lab.ts": "/api",
   "access.ts": "/api",
+  // [stenas:agent-visibility]
+  "agent-access.ts": "/api",
   "activity.ts": "/api",
   "adapters.ts": "/api",
   "agents.ts": "/api",

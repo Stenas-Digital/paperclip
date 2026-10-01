@@ -178,6 +178,8 @@ import {
   type IssueLivenessFinding,
 } from "./recovery/issue-graph-liveness.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+// [stenas:agent-visibility]
+import { agentVisibilityIssueCondition } from "./agent-visibility.js";
 import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
 import {
@@ -1766,6 +1768,8 @@ export interface IssueFilters {
   includeLiveDescendantSummary?: boolean;
   hasPlanDocument?: boolean;
   lowTrustBoundary?: LowTrustBoundary & { companyId: string };
+  // [stenas:agent-visibility] restrict to unassigned / visible-agent issues.
+  agentVisibility?: { allowedAgentIds: readonly string[] };
   q?: string;
   limit?: number;
   offset?: number;
@@ -6159,6 +6163,9 @@ async function blockedInboxIssueConditions(
     filters?.lowTrustBoundary,
   );
   if (lowTrustCondition) conditions.push(lowTrustCondition);
+  // [stenas:agent-visibility]
+  const agentVisibilityCondition = agentVisibilityIssueCondition(filters?.agentVisibility);
+  if (agentVisibilityCondition) conditions.push(agentVisibilityCondition);
   const statuses = parseStatusFilter(filters?.status);
   if (statuses.length > 0) {
     conditions.push(
@@ -7838,6 +7845,9 @@ export function issueService(db: Db) {
         filters?.lowTrustBoundary,
       );
       if (lowTrustCondition) conditions.push(lowTrustCondition);
+      // [stenas:agent-visibility]
+      const agentVisibilityCondition = agentVisibilityIssueCondition(filters?.agentVisibility);
+      if (agentVisibilityCondition) conditions.push(agentVisibilityCondition);
       const statuses = parseStatusFilter(filters?.status);
       if (statuses.length === 1) {
         conditions.push(eq(issues.status, statuses[0]));
@@ -8113,6 +8123,9 @@ export function issueService(db: Db) {
       }
 
       const conditions = [eq(issues.companyId, companyId), visibleIssueCondition()];
+      // [stenas:agent-visibility] count never applied lowTrustBoundary; add visibility explicitly.
+      const countAgentVisibilityCondition = agentVisibilityIssueCondition(filters?.agentVisibility);
+      if (countAgentVisibilityCondition) conditions.push(countAgentVisibilityCondition);
       if (!filters?.q?.trim()) conditions.push(isNull(issues.conversationAgentId));
       const statuses = parseStatusFilter(filters?.status);
       if (statuses.length === 1)

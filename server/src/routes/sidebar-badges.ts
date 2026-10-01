@@ -7,6 +7,8 @@ import { accessService } from "../services/access.js";
 import { dashboardService } from "../services/dashboard.js";
 import { collapseDuplicatePendingHumanJoinRequests } from "../lib/join-request-dedupe.js";
 import { assertCompanyAccess } from "./authz.js";
+// [stenas:agent-visibility]
+import { resolveEffectiveAgentVisibility } from "../services/agent-visibility.js";
 
 function buildDismissedAtByKey(
   dismissals: Array<{ itemKey: string; kind: string; dismissedAt: Date | string; snoozedUntil: Date | string | null }>,
@@ -78,11 +80,14 @@ export function sidebarBadgeRoutes(db: Db) {
           .then(buildDismissedAtByKey)
         : new Map<string, number>();
 
+    // [stenas:agent-visibility]
+    const badgeVisibility = await resolveEffectiveAgentVisibility(db, req.actor, companyId);
     const badges = await svc.get(companyId, {
       dismissals: dismissedAtByKey,
       joinRequests: visibleJoinRequests,
+      visibility: badgeVisibility,
     });
-    const summary = await dashboard.summary(companyId);
+    const summary = await dashboard.summary(companyId, { visibility: badgeVisibility });
     const hasFailedRuns = badges.failedRuns > 0;
     const alertsCount =
       (summary.agents.error > 0 && !hasFailedRuns ? 1 : 0) +

@@ -6,6 +6,12 @@ import { validate } from "../middleware/validate.js";
 import { activityService, normalizeActivityLimit } from "../services/activity.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess, getAccessibleResource, hasCompanyAccess } from "./authz.js";
 import { accessService, heartbeatService, issueService } from "../services/index.js";
+// [stenas:agent-visibility]
+import {
+  isAgentVisible,
+  resolveEffectiveAgentVisibility,
+  visibleAgentIdList,
+} from "../services/agent-visibility.js";
 import { sanitizeRecord } from "../redaction.js";
 import { badRequest, forbidden } from "../errors.js";
 import { agentActionAuditService } from "../services/agent-action-audit.js";
@@ -172,13 +178,26 @@ export function activityRoutes(db: Db) {
     };
   }
 
-  async function assertCompanyScopeReadAllowed(req: Parameters<typeof assertCompanyAccess>[0], res: any, companyId: string) {
+  async function assertCompanyScopeReadAllowed(
+    req: Parameters<typeof assertCompanyAccess>[0],
+    res: any,
+    companyId: string,
+    opts: { allowRestricted?: boolean } = {},
+  ) {
     const decision = await access.decide({
       actor: req.actor,
       action: "company_scope:read",
       resource: { type: "company", companyId },
     });
     if (decision.allowed) return true;
+    // [stenas:agent-visibility] restricted users get a filtered feed.
+    if (
+      opts.allowRestricted &&
+      decision.reason === "deny_scope" &&
+      (await resolveEffectiveAgentVisibility(db, req.actor, companyId)).restricted
+    ) {
+      return true;
+    }
     res.status(403).json({ error: "Activity is outside this actor's authorization boundary" });
     return false;
   }
@@ -222,14 +241,17 @@ export function activityRoutes(db: Db) {
   router.get("/companies/:companyId/activity", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    if (!(await assertCompanyScopeReadAllowed(req, res, companyId))) return;
+    if (!(await assertCompanyScopeReadAllowed(req, res, companyId, { allowRestricted: true }))) return;
 
+    // [stenas:agent-visibility]
+    const activityVisibility = await resolveEffectiveAgentVisibility(db, req.actor, companyId);
     const filters = {
       companyId,
       agentId: req.query.agentId as string | undefined,
       entityType: req.query.entityType as string | undefined,
       entityId: req.query.entityId as string | undefined,
       limit: normalizeActivityLimit(Number(req.query.limit)),
+      visibleAgentIds: visibleAgentIdList(activityVisibility) ?? undefined,
     };
     const result = await svc.list(filters);
     res.json(result);
@@ -353,7 +375,9 @@ export function activityRoutes(db: Db) {
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const result = await svc.runsForIssue(issue.companyId, issue.id);
-    res.json(result);
+    // [stenas:agent-visibility] runs by agents hidden from the actor are dropped.
+    const runsVisibility = await resolveEffectiveAgentVisibility(db, req.actor, issue.companyId);
+    res.json(result.filter((run) => isAgentVisible(runsVisibility, run.agentId)));
   });
 
   router.get("/heartbeat-runs/:runId/issues", async (req, res) => {

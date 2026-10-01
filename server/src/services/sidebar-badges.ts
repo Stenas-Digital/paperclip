@@ -2,6 +2,8 @@ import { and, desc, eq, inArray, not } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvals, heartbeatRuns } from "@paperclipai/db";
 import type { SidebarBadges } from "@paperclipai/shared";
+// [stenas:agent-visibility]
+import { agentVisibilityAgentCondition, type AgentVisibility } from "./agent-visibility.js";
 
 const ACTIONABLE_APPROVAL_STATUSES = ["pending", "revision_requested"];
 const FAILED_HEARTBEAT_STATUSES = ["failed", "timed_out"];
@@ -30,6 +32,8 @@ export function sidebarBadgeService(db: Db) {
         dismissals?: ReadonlyMap<string, number>;
         joinRequests?: Array<{ id: string; updatedAt: Date | string | null; createdAt: Date | string }>;
         unreadTouchedIssues?: number;
+        // [stenas:agent-visibility]
+        visibility?: AgentVisibility;
       },
     ): Promise<SidebarBadges> => {
       const actionableApprovals = await db
@@ -39,6 +43,7 @@ export function sidebarBadgeService(db: Db) {
           and(
             eq(approvals.companyId, companyId),
             inArray(approvals.status, ACTIONABLE_APPROVAL_STATUSES),
+            agentVisibilityAgentCondition(extra?.visibility, approvals.requestedByAgentId, { keepNull: true }),
           ),
         )
         .then((rows) =>
@@ -58,6 +63,7 @@ export function sidebarBadgeService(db: Db) {
             eq(heartbeatRuns.companyId, companyId),
             eq(agents.companyId, companyId),
             not(eq(agents.status, "terminated")),
+            agentVisibilityAgentCondition(extra?.visibility, agents.id),
           ),
         )
         .orderBy(heartbeatRuns.agentId, desc(heartbeatRuns.createdAt));

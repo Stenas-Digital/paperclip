@@ -1,5 +1,5 @@
 import { executionProjectionsForRuns } from "./execution-projection.js";
-import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -26,6 +26,31 @@ export interface ActivityFilters {
   entityType?: string;
   entityId?: string;
   limit?: number;
+  // [stenas:agent-visibility] when set, only activity about these agents (or
+  // unassigned / human-assigned issues) is returned.
+  visibleAgentIds?: readonly string[];
+}
+
+// [stenas:agent-visibility]
+function activityAgentVisibilityConditions(ids: readonly string[]) {
+  const idList = ids.length > 0 ? sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `) : null;
+  const assigneeVisible = (column: SQL) =>
+    idList ? sql`(${column} is null or ${column} in (${idList}))` : sql`${column} is null`;
+  const textIdList = ids.length > 0 ? sql.join(ids.map((id) => sql`${id}`), sql`, `) : null;
+  return [
+    idList
+      ? sql`(${activityLog.agentId} is null or ${activityLog.agentId} in (${idList}))`
+      : sql`${activityLog.agentId} is null`,
+    textIdList
+      ? sql`(${activityLog.entityType} != 'agent' or ${activityLog.entityId} in (${textIdList}))`
+      : sql`${activityLog.entityType} != 'agent'`,
+    sql`(${activityLog.entityType} != 'issue' or ${assigneeVisible(sql`${issues.assigneeAgentId}`)})`,
+    sql`((${activityLog.details} ->> 'issueId') is null or exists (
+      select 1 from ${issues} as visibility_issue
+      where visibility_issue.id::text = ${activityLog.details} ->> 'issueId'
+        and ${assigneeVisible(sql`visibility_issue.assignee_agent_id`)}
+    ))`,
+  ];
 }
 
 const DEFAULT_ACTIVITY_LIMIT = 100;
@@ -340,6 +365,10 @@ export function activityService(db: Db) {
       }
       if (filters.entityId) {
         conditions.push(eq(activityLog.entityId, filters.entityId));
+      }
+      // [stenas:agent-visibility]
+      if (filters.visibleAgentIds) {
+        conditions.push(...activityAgentVisibilityConditions(filters.visibleAgentIds));
       }
 
       return db

@@ -7,6 +7,8 @@ import {
   recoveryObservabilityService,
 } from "../services/recovery-observability.js";
 import { assertCompanyAccess } from "./authz.js";
+// [stenas:agent-visibility]
+import { resolveEffectiveAgentVisibility } from "../services/agent-visibility.js";
 
 function parsePositiveNumber(
   value: unknown,
@@ -27,7 +29,10 @@ export function dashboardRoutes(db: Db) {
   router.get("/companies/:companyId/dashboard", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const summary = await svc.summary(companyId);
+    // [stenas:agent-visibility]
+    const summary = await svc.summary(companyId, {
+      visibility: await resolveEffectiveAgentVisibility(db, req.actor, companyId),
+    });
     res.json(summary);
   });
 
