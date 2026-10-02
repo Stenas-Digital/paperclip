@@ -427,12 +427,13 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     assertCompanyAccess(req, companyId);
     const query = companyArtifactsQuerySchema.parse(req.query);
     // [stenas:agent-visibility] only artifacts of visible issues.
-    const artifactsIssueCondition = agentVisibilityIssueCondition(
-      await resolveEffectiveAgentVisibility(db, req.actor, companyId),
-    );
+    const artifactsVisibility = await resolveEffectiveAgentVisibility(db, req.actor, companyId);
+    const artifactsIssueCondition = agentVisibilityIssueCondition(artifactsVisibility);
     res.json(await artifacts.list(companyId, query, {
       userId: query.starred && req.actor.type === "board" ? req.actor.userId : undefined,
       ...(artifactsIssueCondition ? { issueConditions: [artifactsIssueCondition] } : {}),
+      // Artifacts created by hidden agents stay hidden even on visible tasks.
+      ...(artifactsVisibility.restricted ? { visibleAgentIds: [...artifactsVisibility.allowedAgentIds] } : {}),
     }));
   });
 

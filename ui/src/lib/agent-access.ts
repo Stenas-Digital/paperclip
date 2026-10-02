@@ -9,3 +9,6 @@ export function memberAgentAccessIds(member: Pick<CompanyMember, "grants">): str
   const raw = grant?.scope?.agentIds;
   return Array.isArray(raw) ? raw.filter((value): value is string => typeof value === "string") : [];
 }
+
+/** Agent detail views hidden from users with restricted agent access. */
+export const RESTRICTED_AGENT_VIEWS: ReadonlySet<string> = new Set(["runtime", "secrets", "tools"]);

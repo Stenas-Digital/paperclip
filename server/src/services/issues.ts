@@ -179,7 +179,7 @@ import {
 } from "./recovery/issue-graph-liveness.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 // [stenas:agent-visibility]
-import { agentVisibilityIssueCondition } from "./agent-visibility.js";
+import { agentVisibilityIssueCondition, type IssueVisibilityFilter } from "./agent-visibility.js";
 import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
 import {
@@ -1769,7 +1769,7 @@ export interface IssueFilters {
   hasPlanDocument?: boolean;
   lowTrustBoundary?: LowTrustBoundary & { companyId: string };
   // [stenas:agent-visibility] restrict to unassigned / visible-agent issues.
-  agentVisibility?: { allowedAgentIds: readonly string[] };
+  agentVisibility?: IssueVisibilityFilter;
   q?: string;
   limit?: number;
   offset?: number;

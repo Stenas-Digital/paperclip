@@ -1676,10 +1676,6 @@ export function authorizationService(db: Db | DbTransaction) {
         actor: input.actor,
         action: input.action,
         resource: input.resource,
-        loadIssueAssignee: async (issueId) => {
-          const issue = await loadIssue(issueId);
-          return issue ? { companyId: issue.companyId, assigneeAgentId: issue.assigneeAgentId } : null;
-        },
       });
       if (agentVisibilityDenial) {
         return deny({

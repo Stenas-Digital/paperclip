@@ -43,6 +43,8 @@ import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu.production";
+// [stenas:agent-visibility]
+import { useRestrictedAgentAccess } from "../hooks/useRestrictedAgentAccess";
 
 export function Sidebar() {
   const { openNewIssue } = useDialogActions();
@@ -51,6 +53,8 @@ export function Sidebar() {
   const [workOpen, setWorkOpen] = useState(true);
   const [companyOpen, setCompanyOpen] = useState(true);
   const { selectedCompanyId, selectedCompany } = useCompany();
+  // [stenas:agent-visibility] restricted users have no Audit / costs / timeline.
+  const { restricted: restrictedAgentAccess } = useRestrictedAgentAccess(selectedCompanyId);
   const { collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking;
   const inboxBadge = useInboxBadge(selectedCompanyId);
@@ -231,10 +235,10 @@ export function Sidebar() {
         <SidebarSection label="Company" collapsible={{ open: companyOpen, onOpenChange: setCompanyOpen }}>
           <SidebarNavItem to="/org" label="Org" icon={Network} />
           {showApps ? <SidebarNavItem to="/apps" label="Connectors" icon={Unplug} /> : null}
-          <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />
-          <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
+          {restrictedAgentAccess ? null : <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />}
+          {restrictedAgentAccess ? null : <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />}
           {/* One entry — /audit merged into the rich Activity feed (PAP-16302). */}
-          <SidebarNavItem to="/activity" label="Activity" icon={History} />
+          {restrictedAgentAccess ? null : <SidebarNavItem to="/activity" label="Activity" icon={History} />}
           <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
         </SidebarSection>
 

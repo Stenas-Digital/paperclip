@@ -1,5 +1,6 @@
 import { buffer } from "node:stream/consumers";
 import { and, desc, eq, inArray, isNotNull, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
@@ -320,8 +321,14 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
     list: async (
       companyId: string,
       rawQuery: Partial<CompanyArtifactsQuery> = {},
-      options: { issueConditions?: SQL[]; userId?: string } = {},
+      // [stenas:agent-visibility] visibleAgentIds: only artifacts created by these agents (or by humans).
+      options: { issueConditions?: SQL[]; userId?: string; visibleAgentIds?: readonly string[] } = {},
     ): Promise<CompanyArtifactsResponse> => {
+      const creatorAgentVisible = (column: AnyPgColumn): SQL | null => {
+        if (!options.visibleAgentIds) return null;
+        const ids = [...options.visibleAgentIds];
+        return ids.length > 0 ? or(isNull(column), inArray(column, ids))! : isNull(column);
+      };
       const query = companyArtifactsQuerySchema.parse(rawQuery);
       const cursor = decodeCursor(query.cursor);
       const groupBy = query.groupBy === "none" ? null : query.groupBy;
@@ -356,6 +363,9 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           eq(issueDocuments.companyId, companyId),
           eq(documents.companyId, companyId),
           ...issueConditions,
+          // [stenas:agent-visibility]
+          ...[creatorAgentVisible(documents.createdByAgentId), creatorAgentVisible(documents.updatedByAgentId)]
+            .filter((condition): condition is SQL => condition !== null),
           ...(query.starred
             ? [
               eq(documentMemberships.companyId, companyId),
@@ -481,6 +491,16 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           eq(issueWorkProducts.type, "artifact"),
           eq(issueWorkProducts.provider, "paperclip"),
           ...issueConditions,
+          // [stenas:agent-visibility] work products carry their creator via the run.
+          ...(options.visibleAgentIds
+            ? [sql`(${issueWorkProducts.createdByRunId} is null or exists (
+                select 1 from ${heartbeatRuns} as visibility_run
+                where visibility_run.id = ${issueWorkProducts.createdByRunId}
+                  and ${options.visibleAgentIds.length > 0
+                    ? sql`visibility_run.agent_id in (${sql.join(options.visibleAgentIds.map((id) => sql`${id}::uuid`), sql`, `)})`
+                    : sql`false`}
+              ))`]
+            : []),
         ];
         const workProductConditions: SQL[] = [...workProductBaseConditions];
         const workProductCursor = groupBy
@@ -618,6 +638,8 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           isNull(issueAttachments.issueCommentId),
           isNotNull(assets.createdByAgentId),
           ...issueConditions,
+          // [stenas:agent-visibility]
+          ...[creatorAgentVisible(assets.createdByAgentId)].filter((condition): condition is SQL => condition !== null),
         ];
         const attachmentCursor = groupBy
           ? undefined

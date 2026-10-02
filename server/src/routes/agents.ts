@@ -2022,7 +2022,9 @@ export function agentRoutes(
     } catch {
       return false;
     }
-    if (req.actor.type === "board") return true;
+    // [stenas:agent-visibility] restricted users get the restricted agent view
+    // (no adapter/runtime config, env or secret bindings).
+    if (req.actor.type === "board") return !(await resolveEffectiveAgentVisibility(db, req.actor, companyId)).restricted;
     const decision = await access.decide({
       actor: req.actor,
       action: "agent_config:read",

@@ -302,29 +302,84 @@ export function isAgentVisible(visibility: AgentVisibility, agentId: string | nu
   return Boolean(agentId && visibility.allowedAgentIds.has(agentId));
 }
 
+/** Issue columns the visibility rule reads. Missing fields count as null. */
+export type IssueVisibilityFields = {
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
+  createdByUserId?: string | null;
+  createdByAgentId?: string | null;
+};
+
+/**
+ * A task is visible to a restricted user iff it is assigned to a granted
+ * agent, OR the user created it, OR it has no agent assignee and is either
+ * assigned to the user or created by a granted agent.
+ */
 export function isIssueVisible(
   visibility: AgentVisibility,
-  issue: { assigneeAgentId?: string | null } | null | undefined,
+  issue: IssueVisibilityFields | null | undefined,
 ) {
   if (!visibility.restricted) return true;
   if (!issue) return false;
-  return !issue.assigneeAgentId || visibility.allowedAgentIds.has(issue.assigneeAgentId);
+  const allowed = visibility.allowedAgentIds;
+  const userId = visibility.userId;
+  if (issue.assigneeAgentId && allowed.has(issue.assigneeAgentId)) return true;
+  if (userId && issue.createdByUserId === userId) return true;
+  if (issue.assigneeAgentId) return false;
+  if (userId && issue.assigneeUserId === userId) return true;
+  return Boolean(issue.createdByAgentId && allowed.has(issue.createdByAgentId));
 }
 
 export function visibleAgentIdList(visibility: AgentVisibility): string[] | null {
   return visibility.restricted ? [...visibility.allowedAgentIds] : null;
 }
 
-/** SQL condition restricting issues to the visible set, or undefined when unrestricted. */
+/** Serializable filter form of a restricted visibility (for IssueFilters). */
+export type IssueVisibilityFilter = { allowedAgentIds: readonly string[]; userId: string | null };
+
+export function issueVisibilityFilter(visibility: AgentVisibility): IssueVisibilityFilter | undefined {
+  return visibility.restricted
+    ? { allowedAgentIds: [...visibility.allowedAgentIds], userId: visibility.userId }
+    : undefined;
+}
+
+/** SQL condition (on the `issues` table) restricting issues to the visible set, or undefined when unrestricted. */
 export function agentVisibilityIssueCondition(
-  visibility: AgentVisibility | { allowedAgentIds: readonly string[] } | null | undefined,
-  assigneeColumn: AnyPgColumn = issues.assigneeAgentId,
+  visibility: AgentVisibility | IssueVisibilityFilter | null | undefined,
 ): SQL | undefined {
   if (!visibility) return undefined;
   if ("restricted" in visibility && !visibility.restricted) return undefined;
   const ids = [...visibility.allowedAgentIds];
-  if (ids.length === 0) return isNull(assigneeColumn);
-  return or(isNull(assigneeColumn), inArray(assigneeColumn, ids));
+  const userId = visibility.userId;
+  const unassignedBranch = [
+    ...(userId ? [eq(issues.assigneeUserId, userId)] : []),
+    ...(ids.length > 0 ? [inArray(issues.createdByAgentId, ids)] : []),
+  ];
+  const branches = [
+    ...(ids.length > 0 ? [inArray(issues.assigneeAgentId, ids)] : []),
+    ...(userId ? [eq(issues.createdByUserId, userId)] : []),
+    ...(unassignedBranch.length > 0 ? [and(isNull(issues.assigneeAgentId), or(...unassignedBranch))!] : []),
+  ];
+  return branches.length > 0 ? or(...branches) : sql`false`;
+}
+
+/** Same rule as raw SQL over a table alias that has the issues columns (e.g. "visibility_issue"). */
+export function agentVisibilityIssueRawSql(alias: string, visibility: AgentVisibility | IssueVisibilityFilter): SQL {
+  if ("restricted" in visibility && !visibility.restricted) return sql`true`;
+  const col = (name: string) => sql.raw(`${alias}.${name}`);
+  const ids = [...visibility.allowedAgentIds];
+  const idList = ids.length > 0 ? sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `) : null;
+  const userId = visibility.userId;
+  const parts: SQL[] = [];
+  if (idList) parts.push(sql`${col("assignee_agent_id")} in (${idList})`);
+  if (userId) parts.push(sql`${col("created_by_user_id")} = ${userId}`);
+  const unassigned: SQL[] = [];
+  if (userId) unassigned.push(sql`${col("assignee_user_id")} = ${userId}`);
+  if (idList) unassigned.push(sql`${col("created_by_agent_id")} in (${idList})`);
+  if (unassigned.length > 0) {
+    parts.push(sql`(${col("assignee_agent_id")} is null and (${sql.join(unassigned, sql` or `)}))`);
+  }
+  return parts.length > 0 ? sql`(${sql.join(parts, sql` or `)})` : sql`false`;
 }
 
 /** SQL condition restricting an agent-id column to visible agents (null column = not agent-scoped, kept). */
@@ -356,15 +411,22 @@ function runIssueId(run: RunLike): string | null {
   return null;
 }
 
-/** Loads assignee agent ids for the given issues (missing issues are omitted). */
-export async function loadIssueAssignees(db: DbLike, issueIds: readonly string[]) {
+/** Loads the visibility-relevant columns of the given issues (missing issues are omitted). */
+export async function loadIssueVisibilityFields(db: DbLike, issueIds: readonly string[]) {
   const unique = [...new Set(issueIds.filter(Boolean))];
-  if (unique.length === 0) return new Map<string, string | null>();
+  if (unique.length === 0) return new Map<string, IssueVisibilityFields & { companyId: string }>();
   const rows = await db
-    .select({ id: issues.id, assigneeAgentId: issues.assigneeAgentId })
+    .select({
+      id: issues.id,
+      companyId: issues.companyId,
+      assigneeAgentId: issues.assigneeAgentId,
+      assigneeUserId: issues.assigneeUserId,
+      createdByUserId: issues.createdByUserId,
+      createdByAgentId: issues.createdByAgentId,
+    })
     .from(issues)
     .where(inArray(issues.id, unique));
-  return new Map(rows.map((row) => [row.id, row.assigneeAgentId]));
+  return new Map(rows.map(({ id, ...fields }) => [id, fields]));
 }
 
 /** Drops runs whose agent is hidden or whose task is hidden. */
@@ -375,14 +437,14 @@ export async function filterRunsForVisibility<T extends RunLike>(
 ): Promise<T[]> {
   if (!visibility.restricted) return [...runs];
   const agentVisible = runs.filter((run) => isAgentVisible(visibility, run.agentId));
-  const assignees = await loadIssueAssignees(
+  const fields = await loadIssueVisibilityFields(
     db,
     agentVisible.map(runIssueId).filter((id): id is string => Boolean(id)),
   );
   return agentVisible.filter((run) => {
     const issueId = runIssueId(run);
-    if (!issueId || !assignees.has(issueId)) return true;
-    return isIssueVisible(visibility, { assigneeAgentId: assignees.get(issueId) ?? null });
+    if (!issueId || !fields.has(issueId)) return true;
+    return isIssueVisible(visibility, fields.get(issueId));
   });
 }
 
@@ -454,7 +516,6 @@ export async function decideAgentVisibilityForBoard(
     actor: AgentVisibilityActor;
     action: string;
     resource: HookResource;
-    loadIssueAssignee: (issueId: string) => Promise<{ companyId: string; assigneeAgentId: string | null } | null>;
   },
 ): Promise<{ explanation: string } | null> {
   const { action, resource } = input;
@@ -473,10 +534,11 @@ export async function decideAgentVisibilityForBoard(
   const hiddenAgent = { explanation: "Agent is not visible to this user (restricted agent visibility)." };
   const hiddenIssue = { explanation: "Issue is not visible to this user (restricted agent visibility)." };
 
-  const issueHidden = async (issueId: string | null | undefined, knownAssignee?: string | null) => {
+  const issueHidden = async (issueId: string | null | undefined) => {
     if (!issueId) return false;
-    if (knownAssignee !== undefined) return !isIssueVisible(visibility, { assigneeAgentId: knownAssignee });
-    const issue = await input.loadIssueAssignee(issueId);
+    // Always read the row: the rule needs creator/assignee columns that
+    // resources usually do not carry.
+    const issue = (await loadIssueVisibilityFields(db, [issueId])).get(issueId);
     if (!issue || issue.companyId !== resource.companyId) return false; // let upstream answer
     return !isIssueVisible(visibility, issue);
   };
@@ -491,7 +553,7 @@ export async function decideAgentVisibilityForBoard(
   if (ISSUE_ACTIONS.has(action)) {
     if (resource.type !== "issue") return null;
     if (resource.issueId) {
-      return (await issueHidden(resource.issueId, resource.assigneeAgentId)) ? hiddenIssue : null;
+      return (await issueHidden(resource.issueId)) ? hiddenIssue : null;
     }
     if (resource.parentIssueId && (await issueHidden(resource.parentIssueId))) return hiddenIssue;
     return null;

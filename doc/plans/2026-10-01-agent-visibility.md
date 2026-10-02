@@ -11,8 +11,11 @@ Paperclip instance without seeing each other's agents.
 - **Restricted:** `operator`, `viewer`, legacy `member`, and unset roles. These users see only agents
   granted to them through an `agents:access` permission grant (`principal_permission_grants`,
   scope `{ agentIds: string[] }`). Without a grant they see no agents (default deny).
-- **Tasks:** a task is visible iff it is unassigned, assigned to a human, or assigned to a visible
-  agent. A task reassigned to a hidden agent disappears, including for its creator.
+- **Tasks** (tightened 2026-10-02): a task is visible iff it is assigned to a visible agent, OR
+  the user created it, OR it has no agent assignee and is either assigned to the user or created by a
+  visible agent. Tasks assigned to other humans, or unassigned tasks nobody visible created, are
+  hidden. The first rule, which looked at the assignee only, leaked hidden agents' work once an
+  agent handed a task back to a person.
 - **Agents acting for a user:** an agent acting on behalf of a responsible user inherits that user's
   visibility, plus itself. This happens through upstream's responsible-user intersection, so it is
   enforced unless `PAPERCLIP_RESPONSIBLE_USER_AUTHZ_MODE=shadow`.
@@ -47,6 +50,26 @@ approvals, the dashboard, sidebar badges, the attention inbox and company artifa
   evaluated through `decidePrincipalGrant`.
 - `setPrincipalPermission` rewrites the member's role to `member`, so it must never be used for this
   grant.
+
+## Phase 1b (2026-10-02)
+
+- The tightened task rule above. `isIssueVisible`, `agentVisibilityIssueCondition` and
+  `agentVisibilityIssueRawSql` read `assignee_agent_id`, `assignee_user_id`, `created_by_user_id` and
+  `created_by_agent_id`. Embedded relation summaries are resolved through one batched
+  `loadIssueVisibilityFields` query.
+- **Routines:** the list hides routines assigned to hidden agents, and the guard 404s
+  `/routines/:id` and `/routine-triggers/:id`.
+- **Artifacts:** anything created by a hidden agent is hidden (documents created or updated by one,
+  work products via their run, attachments via their asset), on the Artifacts page, in search, and
+  by id.
+- **Denied outright for restricted board users** (`restrictedBoardDeny` in the guard): agent
+  `configuration`, `config-revisions` and `runtime-state`; an agent's effective tool profile; any
+  write under `/projects/:id`; `/companies/:id/audit/*`. Agent list and detail use the existing
+  restricted agent view, without adapter or runtime config.
+- **UI:** `useRestrictedAgentAccess` reads `/api/cli-auth/me`. It hides Audit, Costs and Timeline
+  navigation, gates their routes (`RestrictedAgentAccessGate`), removes the project Configuration
+  and Budget tabs, and removes the agent views Harness / Runtime, Secrets and Tools, including the
+  agent's Audit links.
 
 ## Phase 2 (closed to restricted users until done)
 

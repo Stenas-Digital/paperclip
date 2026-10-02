@@ -100,6 +100,8 @@ import { InviteLandingPage } from "./pages/InviteLanding";
 import { JoinRequestQueue } from "./pages/JoinRequestQueue";
 import { NotFoundPage } from "./pages/NotFound";
 import { useCompany } from "./context/CompanyContext";
+// [stenas:agent-visibility]
+import { RestrictedAgentAccessGate } from "./components/RestrictedAgentAccessGate";
 import { useDialogActions, useDialogState } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
 import {
@@ -151,7 +153,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="dashboard/live" element={<DashboardLive />} />
       <Route
         path="timeline"
-        element={streamlinedUiEnabled ? <AuditCompatibilityRedirect to="/activity/timeline" /> : <Timeline />}
+        element={<RestrictedAgentAccessGate>{streamlinedUiEnabled ? <AuditCompatibilityRedirect to="/activity/timeline" /> : <Timeline />}</RestrictedAgentAccessGate>}
       />
       <Route path="onboarding" element={<OnboardingRoutePage />} />
       <Route path="companies" element={<Companies />} />
@@ -380,13 +382,13 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="approvals/pending" element={<Approvals />} />
       <Route path="approvals/all" element={<Approvals />} />
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
-      <Route path="activity" element={streamlinedUiEnabled ? <CompanyActivity /> : <ProductionSurface><ProductionCompanyActivity /></ProductionSurface>} />
+      <Route path="activity" element={<RestrictedAgentAccessGate>{streamlinedUiEnabled ? <CompanyActivity /> : <ProductionSurface><ProductionCompanyActivity /></ProductionSurface>}</RestrictedAgentAccessGate>} />
       {streamlinedUiEnabled ? (
         <>
-          <Route path="activity/runs" element={<AuditHub section="runs" />} />
-          <Route path="activity/costs" element={<AuditHub section="costs" />} />
-          <Route path="activity/budgets" element={<AuditHub section="budgets" />} />
-          <Route path="activity/timeline" element={<AuditHub section="timeline" />} />
+          <Route path="activity/runs" element={<RestrictedAgentAccessGate><AuditHub section="runs" /></RestrictedAgentAccessGate>} />
+          <Route path="activity/costs" element={<RestrictedAgentAccessGate><AuditHub section="costs" /></RestrictedAgentAccessGate>} />
+          <Route path="activity/budgets" element={<RestrictedAgentAccessGate><AuditHub section="budgets" /></RestrictedAgentAccessGate>} />
+          <Route path="activity/timeline" element={<RestrictedAgentAccessGate><AuditHub section="timeline" /></RestrictedAgentAccessGate>} />
           <Route path="audit" element={<AuditCompatibilityRedirect to="/activity" forceAgentMode />} />
           <Route path="audit/activity" element={<AuditCompatibilityRedirect to="/activity" />} />
           <Route path="audit/runs" element={<AuditCompatibilityRedirect to="/activity/runs" />} />
@@ -399,7 +401,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
         </>
       ) : (
         <>
-          <Route path="costs" element={<ProductionSurface><ProductionCosts /></ProductionSurface>} />
+          <Route path="costs" element={<RestrictedAgentAccessGate><ProductionSurface><ProductionCosts /></ProductionSurface></RestrictedAgentAccessGate>} />
           <Route path="audit" element={<Navigate to="/activity?mode=agents" replace />} />
         </>
       )}

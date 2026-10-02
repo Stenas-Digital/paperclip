@@ -139,6 +139,9 @@ import {
   parseAgentDetailView,
   type AgentDetailView,
 } from "./agent-detail-navigation";
+// [stenas:agent-visibility]
+import { useRestrictedAgentAccess } from "@/hooks/useRestrictedAgentAccess";
+import { RESTRICTED_AGENT_VIEWS } from "@/lib/agent-access";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
   succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
@@ -812,6 +815,8 @@ export function AgentDetail() {
     enabled: canFetchAgent,
   });
   const resolvedCompanyId = agent?.companyId ?? selectedCompanyId;
+  // [stenas:agent-visibility] no runtime / secrets / tools views for restricted users.
+  const { restricted: restrictedAgentAccess } = useRestrictedAgentAccess(resolvedCompanyId);
   const canonicalAgentRef = agent ? agentRouteRef(agent) : routeAgentRef;
   const handleLegacyTabChange = useCallback((next: string) => {
     if (!prepareAgentNavigation()) return;
@@ -1157,6 +1162,9 @@ export function AgentDetail() {
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!agent) return null;
+  if (restrictedAgentAccess && RESTRICTED_AGENT_VIEWS.has(activeView)) {
+    return <Navigate to={agentDetailHref(canonicalAgentRef)} replace />; // [stenas:agent-visibility]
+  }
   if (!urlRunId && legacyAuditSection) {
     return <Navigate to={agentScopedAuditHref(agent.id, legacyAuditSection)} replace />;
   }
@@ -1720,6 +1728,8 @@ export function AgentOverview({
   skillNames: string[];
   agentRouteId: string;
 }) {
+  // [stenas:agent-visibility]
+  const { restricted: restrictedAgentAccess } = useRestrictedAgentAccess(agent.companyId);
   const issuesById = useMemo(() => {
     const map = new Map<string, (typeof assignedIssues)[number]>();
     for (const issue of assignedIssues) map.set(issue.id, issue);
@@ -1758,7 +1768,9 @@ export function AgentOverview({
         <section className="rounded-lg border border-border p-4" aria-labelledby="agent-runtime-heading">
           <div className="mb-4 flex items-center justify-between gap-3">
             <h3 id="agent-runtime-heading" className="text-sm font-medium">Harness / Runtime</h3>
-            <Link className="text-xs text-muted-foreground hover:text-foreground" to={agentDetailHref(agentRouteId, "runtime")}>Configure</Link>
+            {restrictedAgentAccess ? null : (
+              <Link className="text-xs text-muted-foreground hover:text-foreground" to={agentDetailHref(agentRouteId, "runtime")}>Configure</Link>
+            )}
           </div>
           <div className="space-y-3">
             <SummaryRow label="Adapter"><span className="text-sm">{adapterLabels[agent.adapterType] ?? agent.adapterType}</span></SummaryRow>

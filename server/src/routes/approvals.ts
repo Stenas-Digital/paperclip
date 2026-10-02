@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
 import { and, eq, inArray } from "drizzle-orm";
-import { heartbeatRuns, issueApprovals, issues, type Db } from "@paperclipai/db";
+import { heartbeatRuns, issueApprovals, type Db } from "@paperclipai/db";
 import {
   addApprovalCommentSchema,
   createApprovalSchema,
@@ -27,6 +27,7 @@ import { REVIEW_PATH_RECOVERY_INSTRUCTION } from "../services/recovery/review-pa
 import {
   isAgentVisible,
   isIssueVisible,
+  loadIssueVisibilityFields,
   resolveEffectiveAgentVisibility,
 } from "../services/agent-visibility.js";
 
@@ -231,13 +232,15 @@ export function approvalRoutes(
       const approvalIds = result.map((approval) => approval.id);
       const linked = approvalIds.length
         ? await db
-          .select({ approvalId: issueApprovals.approvalId, assigneeAgentId: issues.assigneeAgentId })
+          .select({ approvalId: issueApprovals.approvalId, issueId: issueApprovals.issueId })
           .from(issueApprovals)
-          .innerJoin(issues, eq(issues.id, issueApprovals.issueId))
           .where(and(eq(issueApprovals.companyId, companyId), inArray(issueApprovals.approvalId, approvalIds)))
         : [];
+      const linkedFields = await loadIssueVisibilityFields(db, linked.map((row) => row.issueId));
       const hiddenApprovalIds = new Set(
-        linked.filter((row) => !isIssueVisible(approvalsVisibility, row)).map((row) => row.approvalId),
+        linked
+          .filter((row) => !isIssueVisible(approvalsVisibility, linkedFields.get(row.issueId)))
+          .map((row) => row.approvalId),
       );
       result = result.filter((approval) => !hiddenApprovalIds.has(approval.id));
     }

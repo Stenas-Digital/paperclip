@@ -7,17 +7,19 @@
  * sockets get a synchronous pass-through. Event order is preserved with a
  * per-connection promise chain; lookups fail closed (the event is dropped).
  */
-import { eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { heartbeatRuns, issues } from "@paperclipai/db";
+import { heartbeatRuns } from "@paperclipai/db";
 import type { LiveEvent } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import {
   isAgentVisible,
   isIssueVisible,
   isMemberAccessChangeAction,
+  loadIssueVisibilityFields,
   resolveEffectiveAgentVisibility,
   type AgentVisibility,
+  type IssueVisibilityFields,
 } from "../services/agent-visibility.js";
 
 const LOOKUP_TTL_MS = 3_000;
@@ -52,7 +54,7 @@ function createLookupCache<T>(load: (ids: string[]) => Promise<Map<string, T>>) 
   };
 }
 
-type IssueRef = { assigneeAgentId: string | null };
+type IssueRef = IssueVisibilityFields;
 type RunRef = { agentId: string; issueId: string | null };
 
 const cachesByDb = new WeakMap<object, {
@@ -64,13 +66,7 @@ function cachesFor(db: Db) {
   let caches = cachesByDb.get(db);
   if (!caches) {
     caches = {
-      issues: createLookupCache<IssueRef>(async (ids) => {
-        const rows = await db
-          .select({ id: issues.id, assigneeAgentId: issues.assigneeAgentId })
-          .from(issues)
-          .where(inArray(issues.id, ids));
-        return new Map(rows.map((row) => [row.id, { assigneeAgentId: row.assigneeAgentId }]));
-      }),
+      issues: createLookupCache<IssueRef>((ids) => loadIssueVisibilityFields(db, ids)),
       runs: createLookupCache<RunRef>(async (ids) => {
         const rows = await db
           .select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, contextSnapshot: heartbeatRuns.contextSnapshot })

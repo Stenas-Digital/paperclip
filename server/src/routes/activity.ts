@@ -10,7 +10,7 @@ import { accessService, heartbeatService, issueService } from "../services/index
 import {
   isAgentVisible,
   resolveEffectiveAgentVisibility,
-  visibleAgentIdList,
+  issueVisibilityFilter,
 } from "../services/agent-visibility.js";
 import { sanitizeRecord } from "../redaction.js";
 import { badRequest, forbidden } from "../errors.js";
@@ -251,7 +251,7 @@ export function activityRoutes(db: Db) {
       entityType: req.query.entityType as string | undefined,
       entityId: req.query.entityId as string | undefined,
       limit: normalizeActivityLimit(Number(req.query.limit)),
-      visibleAgentIds: visibleAgentIdList(activityVisibility) ?? undefined,
+      visibility: issueVisibilityFilter(activityVisibility),
     };
     const result = await svc.list(filters);
     res.json(result);

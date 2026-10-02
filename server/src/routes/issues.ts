@@ -280,10 +280,15 @@ import { authorizationDeniedDetails } from "../services/authorization.js";
 // [stenas:agent-visibility]
 import {
   filterVisibleAgentIds,
+  issueVisibilityFilter,
   resolveEffectiveAgentVisibility,
   type AgentVisibility,
 } from "../services/agent-visibility.js";
-import { filterVisibleIssues, redactIssueRelations } from "./agent-visibility-redaction.js";
+import {
+  filterVisibleIssues,
+  redactIssueRelations,
+  redactIssueRelationsMany,
+} from "./agent-visibility-redaction.js";
 import { stalledReviewDecisionService } from "../services/stalled-review-decisions.js";
 import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
@@ -8112,9 +8117,7 @@ export function issueRoutes(
     // [stenas:agent-visibility] restricted actors get SQL-level filtering.
     const listAgentVisibility = await resolveEffectiveAgentVisibility(db, req.actor, companyId);
     if (listAgentVisibility.restricted) {
-      listFilters.agentVisibility = {
-        allowedAgentIds: [...listAgentVisibility.allowedAgentIds],
-      };
+      listFilters.agentVisibility = issueVisibilityFilter(listAgentVisibility);
     }
     const requestKey = issueListRequestKey({
       req,
@@ -8134,7 +8137,7 @@ export function issueRoutes(
         const rawResult = await svc.list(companyId, listFilters);
         // [stenas:agent-visibility] already filtered in SQL; also drop hidden embedded relations.
         const result = listAgentVisibility.restricted
-          ? rawResult.map((issue) => redactIssueRelations(listAgentVisibility, issue))
+          ? await redactIssueRelationsMany(db, listAgentVisibility, rawResult)
           : (await actorCanReadCompanyScope(req, companyId))
             ? rawResult
             : await filterIssuesForActor(req, rawResult);
@@ -8339,7 +8342,7 @@ export function issueRoutes(
     if (countAgentVisibility.restricted) {
       const count = await svc.count(companyId, {
         ...blockedCountFilters,
-        agentVisibility: { allowedAgentIds: [...countAgentVisibility.allowedAgentIds] },
+        agentVisibility: issueVisibilityFilter(countAgentVisibility),
       });
       res.json({ count });
       return;
@@ -8633,6 +8636,11 @@ export function issueRoutes(
 
     // [stenas:agent-visibility]
     const heartbeatContextVisibility = await resolveEffectiveAgentVisibility(db, req.actor, issue.companyId);
+    const [visibleBlockedBy, visibleBlocks, visibleAncestors] = await Promise.all([
+      filterVisibleIssues(db, heartbeatContextVisibility, relationsWithRecoveryActions.blockedBy),
+      filterVisibleIssues(db, heartbeatContextVisibility, relationsWithRecoveryActions.blocks),
+      filterVisibleIssues(db, heartbeatContextVisibility, ancestors),
+    ]);
     const response = {
       issue: {
         id: issue.id,
@@ -8649,15 +8657,15 @@ export function issueRoutes(
         projectId: issue.projectId,
         goalId: goal?.id ?? issue.goalId,
         parentId: issue.parentId,
-        blockedBy: filterVisibleIssues(heartbeatContextVisibility, relationsWithRecoveryActions.blockedBy),
-        blocks: filterVisibleIssues(heartbeatContextVisibility, relationsWithRecoveryActions.blocks),
+        blockedBy: visibleBlockedBy,
+        blocks: visibleBlocks,
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
         originKind: issue.originKind,
         originId: issue.originId,
         updatedAt: issue.updatedAt,
       },
-      ancestors: filterVisibleIssues(heartbeatContextVisibility, ancestors).map((ancestor) => ({
+      ancestors: visibleAncestors.map((ancestor) => ({
         id: ancestor.id,
         identifier: ancestor.identifier,
         title: ancestor.title,
@@ -8942,7 +8950,7 @@ export function issueRoutes(
     );
     // [stenas:agent-visibility] drop hidden ancestors/blockers/related work.
     const detailAgentVisibility = await resolveEffectiveAgentVisibility(db, req.actor, issue.companyId);
-    res.json(redactIssueRelations(detailAgentVisibility, {
+    res.json(await redactIssueRelations(db, detailAgentVisibility, {
       ...issue,
       ...inboxArchiveFields,
       goalId: goal?.id ?? issue.goalId,

@@ -14,17 +14,22 @@ import type { Db } from "@paperclipai/db";
 import {
   agents,
   approvals,
+  assets,
   heartbeatRuns,
   issueApprovals,
   issueAttachments,
   issues,
   issueWorkProducts,
+  projects,
+  routines,
+  routineTriggers,
 } from "@paperclipai/db";
 import { isUuidLike, normalizeIssueIdentifier } from "@paperclipai/shared";
 import { agentService } from "../services/agents.js";
 import {
   isAgentVisible,
   isIssueVisible,
+  loadIssueVisibilityFields,
   resolveEffectiveAgentVisibility,
   type AgentVisibility,
 } from "../services/agent-visibility.js";
@@ -49,6 +54,9 @@ export function agentVisibilityGuardRoutes(db: Db) {
       id: issues.id,
       companyId: issues.companyId,
       assigneeAgentId: issues.assigneeAgentId,
+      assigneeUserId: issues.assigneeUserId,
+      createdByUserId: issues.createdByUserId,
+      createdByAgentId: issues.createdByAgentId,
     };
     if (isUuidLike(rawRef)) {
       return db.select(select).from(issues).where(eq(issues.id, rawRef)).then((rows) => rows[0] ?? null);
@@ -63,11 +71,7 @@ export function agentVisibilityGuardRoutes(db: Db) {
   }
 
   async function loadIssueById(issueId: string) {
-    return db
-      .select({ id: issues.id, companyId: issues.companyId, assigneeAgentId: issues.assigneeAgentId })
-      .from(issues)
-      .where(eq(issues.id, issueId))
-      .then((rows) => rows[0] ?? null);
+    return (await loadIssueVisibilityFields(db, [issueId])).get(issueId) ?? null;
   }
 
   async function issueHiddenFor(req: Request, issueId: string | null | undefined, companyId: string) {
@@ -153,11 +157,19 @@ export function agentVisibilityGuardRoutes(db: Db) {
     const id = param(req, "attachmentId");
     if (!id || !isUuidLike(id)) return null;
     const row = await db
-      .select({ companyId: issueAttachments.companyId, issueId: issueAttachments.issueId })
+      .select({
+        companyId: issueAttachments.companyId,
+        issueId: issueAttachments.issueId,
+        creatorAgentId: assets.createdByAgentId,
+      })
       .from(issueAttachments)
+      .leftJoin(assets, eq(assets.id, issueAttachments.assetId))
       .where(eq(issueAttachments.id, id))
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
+    if (row.creatorAgentId && !isAgentVisible(await visibilityFor(req, row.companyId), row.creatorAgentId)) {
+      return "Attachment not found";
+    }
     return (await issueHiddenFor(req, row.issueId, row.companyId)) ? "Attachment not found" : null;
   });
 
@@ -165,11 +177,19 @@ export function agentVisibilityGuardRoutes(db: Db) {
     const id = param(req, "workProductId");
     if (!id || !isUuidLike(id)) return null;
     const row = await db
-      .select({ companyId: issueWorkProducts.companyId, issueId: issueWorkProducts.issueId })
+      .select({
+        companyId: issueWorkProducts.companyId,
+        issueId: issueWorkProducts.issueId,
+        creatorAgentId: heartbeatRuns.agentId,
+      })
       .from(issueWorkProducts)
+      .leftJoin(heartbeatRuns, eq(heartbeatRuns.id, issueWorkProducts.createdByRunId))
       .where(eq(issueWorkProducts.id, id))
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
+    if (row.creatorAgentId && !isAgentVisible(await visibilityFor(req, row.companyId), row.creatorAgentId)) {
+      return "Work product not found";
+    }
     return (await issueHiddenFor(req, row.issueId, row.companyId)) ? "Work product not found" : null;
   });
 
@@ -187,13 +207,76 @@ export function agentVisibilityGuardRoutes(db: Db) {
     if (approval.requestedByAgentId && !isAgentVisible(visibility, approval.requestedByAgentId)) {
       return "Approval not found";
     }
-    const linked = await db
-      .select({ assigneeAgentId: issues.assigneeAgentId })
+    const linkedIds = await db
+      .select({ issueId: issueApprovals.issueId })
       .from(issueApprovals)
-      .innerJoin(issues, eq(issues.id, issueApprovals.issueId))
       .where(and(eq(issueApprovals.approvalId, id), eq(issueApprovals.companyId, approval.companyId)));
-    return linked.every((issue) => isIssueVisible(visibility, issue)) ? null : "Approval not found";
+    const linked = await loadIssueVisibilityFields(db, linkedIds.map((row) => row.issueId));
+    return [...linked.values()].every((issue) => isIssueVisible(visibility, issue)) ? null : "Approval not found";
   });
+
+  async function routineHidden(req: Request, routineId: string | null) {
+    if (!routineId || !isUuidLike(routineId)) return false;
+    const routine = await db
+      .select({ companyId: routines.companyId, assigneeAgentId: routines.assigneeAgentId })
+      .from(routines)
+      .where(eq(routines.id, routineId))
+      .then((rows) => rows[0] ?? null);
+    if (!routine?.assigneeAgentId) return false;
+    return !isAgentVisible(await visibilityFor(req, routine.companyId), routine.assigneeAgentId);
+  }
+
+  const routineGuard = guard(async (req) =>
+    (await routineHidden(req, param(req, "routineId"))) ? "Routine not found" : null,
+  );
+
+  const routineTriggerGuard = guard(async (req) => {
+    const id = param(req, "triggerId");
+    if (!id || !isUuidLike(id)) return null;
+    const trigger = await db
+      .select({ routineId: routineTriggers.routineId })
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, id))
+      .then((rows) => rows[0] ?? null);
+    return (await routineHidden(req, trigger?.routineId ?? null)) ? "Routine trigger not found" : null;
+  });
+
+  /**
+   * Surfaces restricted board users have no access to at all (agent runtime /
+   * secrets / tools configuration, project configuration writes, audit). Only
+   * direct board actors; agents keep their own configuration flows.
+   */
+  function restrictedBoardDeny(
+    message: string,
+    opts: { companyIdFrom?: "param" | "agent" | "project"; writesOnly?: boolean } = {},
+  ): Guard {
+    return async (req, res, next) => {
+      try {
+        if (req.actor.type !== "board") return next();
+        if (opts.writesOnly && (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS")) return next();
+        let companyId: string | null = null;
+        if (opts.companyIdFrom === "agent") {
+          const ref = param(req, "agentRef");
+          companyId = ref ? (await resolveAgentRef(req, ref, null))?.companyId ?? null : null;
+        } else if (opts.companyIdFrom === "project") {
+          const projectId = param(req, "projectId");
+          companyId = projectId && isUuidLike(projectId)
+            ? await db.select({ companyId: projects.companyId }).from(projects).where(eq(projects.id, projectId)).then((rows) => rows[0]?.companyId ?? null)
+            : null;
+        } else {
+          companyId = param(req, "companyId");
+        }
+        if (!companyId) return next();
+        if ((await visibilityFor(req, companyId)).restricted) {
+          res.status(403).json({ error: message });
+          return;
+        }
+        next();
+      } catch (err) {
+        next(err);
+      }
+    };
+  }
 
   // Feedback traces are operator debugging data; restricted users never see them.
   const feedbackTraceGuard: Guard = async (req, res, next) => {
@@ -222,6 +305,24 @@ export function agentVisibilityGuardRoutes(db: Db) {
   router.use("/work-products/:workProductId", workProductGuard);
   router.use("/approvals/:approvalId", approvalGuard);
   router.use("/feedback-traces/:traceId", feedbackTraceGuard);
+  router.use("/routines/:routineId", routineGuard);
+  const agentConfigDenied = restrictedBoardDeny("Agent configuration is not available with restricted agent access.", { companyIdFrom: "agent" });
+  router.use("/agents/:agentRef/configuration", agentConfigDenied);
+  router.use("/agents/:agentRef/config-revisions", agentConfigDenied);
+  router.use("/agents/:agentRef/runtime-state", agentConfigDenied);
+  router.use(
+    "/companies/:companyId/tools/profiles/effective/agents/:agentRef",
+    restrictedBoardDeny("Agent tools are not available with restricted agent access."),
+  );
+  router.use(
+    "/projects/:projectId",
+    restrictedBoardDeny("Project configuration is not available with restricted agent access.", {
+      companyIdFrom: "project",
+      writesOnly: true,
+    }),
+  );
+  router.use("/companies/:companyId/audit", restrictedBoardDeny("Audit is not available with restricted agent access."));
+  router.use("/routine-triggers/:triggerId", routineTriggerGuard);
 
   return router;
 }

@@ -163,7 +163,11 @@ export function routineRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
-    const result = await svc.list(companyId, { projectId });
+    // [stenas:agent-visibility] hide routines of agents the actor cannot see.
+    const routinesVisibility = await resolveEffectiveAgentVisibility(db, req.actor, companyId);
+    const result = (await svc.list(companyId, { projectId })).filter(
+      (routine) => !routine.assigneeAgentId || isAgentVisible(routinesVisibility, routine.assigneeAgentId),
+    );
     res.json(result);
   });
 

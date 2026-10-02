@@ -49,6 +49,8 @@ import { PluginSlotOutlet } from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
 import { primarySidebarStyles } from "./primary-sidebar-styles";
+// [stenas:agent-visibility]
+import { useRestrictedAgentAccess } from "../hooks/useRestrictedAgentAccess";
 
 export function Sidebar({ children }: { children?: ReactNode }) {
   const { openNewIssue } = useDialogActions();
@@ -58,6 +60,8 @@ export function Sidebar({ children }: { children?: ReactNode }) {
   const [workOpen, setWorkOpen] = useState(true);
   const [organizationOpen, setOrganizationOpen] = useState(true);
   const { selectedCompanyId, selectedCompany } = useCompany();
+  // [stenas:agent-visibility] restricted users have no Audit / costs / timeline.
+  const { restricted: restrictedAgentAccess } = useRestrictedAgentAccess(selectedCompanyId);
   const { collapsed, peeking } = useSidebar();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const rail = collapsed && !peeking;
@@ -243,7 +247,7 @@ export function Sidebar({ children }: { children?: ReactNode }) {
             <SidebarNavItem to="/agents" label="Agents" icon={Users} />
             <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
             <SidebarNavItem to="/apps" label="Connectors" icon={Unplug} />
-            <SidebarNavItem to="/activity" label="Audit" icon={History} />
+            {restrictedAgentAccess ? null : <SidebarNavItem to="/activity" label="Audit" icon={History} />}
           </SidebarSection>
         ) : null}
 
@@ -262,9 +266,9 @@ export function Sidebar({ children }: { children?: ReactNode }) {
             >
               <SidebarNavItem to="/org" label="Org" icon={Network} />
               <SidebarNavItem to="/apps" label="Connectors" icon={Unplug} />
-              <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />
-              <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
-              <SidebarNavItem to="/activity" label="Activity" icon={History} />
+              {restrictedAgentAccess ? null : <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />}
+              {restrictedAgentAccess ? null : <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />}
+              {restrictedAgentAccess ? null : <SidebarNavItem to="/activity" label="Activity" icon={History} />}
               <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
             </SidebarSection>
           </>

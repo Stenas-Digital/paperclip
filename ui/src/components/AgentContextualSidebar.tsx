@@ -27,6 +27,9 @@ import {
   agentScopedAuditHref,
   type AgentLocalDetailView,
 } from "@/pages/agent-detail-navigation";
+// [stenas:agent-visibility]
+import { useRestrictedAgentAccess } from "@/hooks/useRestrictedAgentAccess";
+import { RESTRICTED_AGENT_VIEWS } from "@/lib/agent-access";
 
 const localIcons = {
   overview: Sparkles,
@@ -60,6 +63,8 @@ export function AgentContextualSidebar({
   labels?: Partial<Record<AgentLocalDetailView, string>>;
 }) {
   const { selectedCompanyId } = useCompany();
+  // [stenas:agent-visibility] no runtime / secrets / tools / audit for restricted users.
+  const { restricted: restrictedAgentAccess } = useRestrictedAgentAccess(selectedCompanyId);
   const { enabled: chatConnectorsEnabled } = useChatConnectorsEnabled();
   const shouldResolveAgent = !agentId || !agentName;
   const { data: resolvedAgent } = useQuery({
@@ -83,7 +88,10 @@ export function AgentContextualSidebar({
         data-slot="contextual-sidebar-nav"
         className={contextualSidebarStyles.nav}
       >
-        {AGENT_DETAIL_NAVIGATION.map((section) => (
+        {AGENT_DETAIL_NAVIGATION.map((section) => ({
+          ...section,
+          items: section.items.filter((item) => !restrictedAgentAccess || !RESTRICTED_AGENT_VIEWS.has(item.value)),
+        })).filter((section) => section.items.length > 0).map((section) => (
           <div
             key={section.label}
             data-slot="contextual-sidebar-section"
@@ -113,7 +121,7 @@ export function AgentContextualSidebar({
           </div>
         ))}
 
-        <div data-slot="contextual-sidebar-section" className={contextualSidebarStyles.section}>
+        {restrictedAgentAccess ? null : <div data-slot="contextual-sidebar-section" className={contextualSidebarStyles.section}>
           <p
             data-slot="contextual-sidebar-section-label"
             className={contextualSidebarStyles.sectionLabel}
@@ -132,7 +140,7 @@ export function AgentContextualSidebar({
               <p className="px-2 py-1.5 text-xs text-muted-foreground">Loading audit links…</p>
             )}
           </div>
-        </div>
+        </div>}
       </nav>
     </ContextualSidebarFrame>
   );

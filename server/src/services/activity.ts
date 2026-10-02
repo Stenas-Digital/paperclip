@@ -1,5 +1,5 @@
 import { executionProjectionsForRuns } from "./execution-projection.js";
-import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -19,6 +19,8 @@ import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { classifyRunLiveness } from "./run-liveness.js";
+// [stenas:agent-visibility]
+import { agentVisibilityIssueRawSql, type IssueVisibilityFilter } from "./agent-visibility.js";
 
 export interface ActivityFilters {
   companyId: string;
@@ -26,16 +28,15 @@ export interface ActivityFilters {
   entityType?: string;
   entityId?: string;
   limit?: number;
-  // [stenas:agent-visibility] when set, only activity about these agents (or
-  // unassigned / human-assigned issues) is returned.
-  visibleAgentIds?: readonly string[];
+  // [stenas:agent-visibility] when set, only activity about visible agents
+  // and visible issues (see agent-visibility.ts) is returned.
+  visibility?: IssueVisibilityFilter;
 }
 
 // [stenas:agent-visibility]
-function activityAgentVisibilityConditions(ids: readonly string[]) {
+function activityAgentVisibilityConditions(visibility: IssueVisibilityFilter) {
+  const ids = [...visibility.allowedAgentIds];
   const idList = ids.length > 0 ? sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `) : null;
-  const assigneeVisible = (column: SQL) =>
-    idList ? sql`(${column} is null or ${column} in (${idList}))` : sql`${column} is null`;
   const textIdList = ids.length > 0 ? sql.join(ids.map((id) => sql`${id}`), sql`, `) : null;
   return [
     idList
@@ -44,11 +45,11 @@ function activityAgentVisibilityConditions(ids: readonly string[]) {
     textIdList
       ? sql`(${activityLog.entityType} != 'agent' or ${activityLog.entityId} in (${textIdList}))`
       : sql`${activityLog.entityType} != 'agent'`,
-    sql`(${activityLog.entityType} != 'issue' or ${assigneeVisible(sql`${issues.assigneeAgentId}`)})`,
+    sql`(${activityLog.entityType} != 'issue' or ${agentVisibilityIssueRawSql("issues", visibility)})`,
     sql`((${activityLog.details} ->> 'issueId') is null or exists (
       select 1 from ${issues} as visibility_issue
       where visibility_issue.id::text = ${activityLog.details} ->> 'issueId'
-        and ${assigneeVisible(sql`visibility_issue.assignee_agent_id`)}
+        and ${agentVisibilityIssueRawSql("visibility_issue", visibility)}
     ))`,
   ];
 }
@@ -367,8 +368,8 @@ export function activityService(db: Db) {
         conditions.push(eq(activityLog.entityId, filters.entityId));
       }
       // [stenas:agent-visibility]
-      if (filters.visibleAgentIds) {
-        conditions.push(...activityAgentVisibilityConditions(filters.visibleAgentIds));
+      if (filters.visibility) {
+        conditions.push(...activityAgentVisibilityConditions(filters.visibility));
       }
 
       return db

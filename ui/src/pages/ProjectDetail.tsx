@@ -45,6 +45,8 @@ import {
   useResourceMembershipMutation,
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
+// [stenas:agent-visibility]
+import { useRestrictedAgentAccess } from "@/hooks/useRestrictedAgentAccess";
 
 /* ── Top-level tab types ── */
 
@@ -361,6 +363,8 @@ export function ProjectDetail() {
   const canonicalProjectRef = project ? projectRouteRef(project) : routeProjectRef;
   const projectLookupRef = project?.id ?? routeProjectRef;
   const resolvedCompanyId = project?.companyId ?? selectedCompanyId;
+  // [stenas:agent-visibility] restricted users get no project configuration / budget.
+  const { restricted: restrictedAgentAccess } = useRestrictedAgentAccess(resolvedCompanyId);
   const membershipsQuery = useResourceMemberships(resolvedCompanyId);
   const membershipMutation = useResourceMembershipMutation(resolvedCompanyId);
   const projectMembershipState = project?.id
@@ -642,11 +646,19 @@ export function ProjectDetail() {
     return <Navigate to={`/projects/${canonicalProjectRef}/issues`} replace />;
   }
 
+  // [stenas:agent-visibility]
+  if (restrictedAgentAccess && (activeTab === "configuration" || activeTab === "budget")) {
+    return <Navigate to={`/projects/${canonicalProjectRef}/issues`} replace />;
+  }
+
   // Redirect bare /projects/:id to cached tab or default /issues
   if (routeProjectRef && activeTab === null) {
     let cachedTab: string | null = null;
     if (project?.id) {
       try { cachedTab = localStorage.getItem(`paperclip:project-tab:${project.id}`); } catch {}
+    }
+    if (restrictedAgentAccess && (cachedTab === "overview" || cachedTab === "configuration" || cachedTab === "budget")) {
+      cachedTab = null; // [stenas:agent-visibility]
     }
     if (cachedTab === "overview") {
       return <Navigate to={`/projects/${canonicalProjectRef}/configuration`} replace />;
@@ -834,8 +846,13 @@ export function ProjectDetail() {
 
             ...(project.managedByPlugin ? [{ value: "plugin-operations", label: "Plugin operations" }] : []),
             ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
-            { value: "configuration", label: "Configuration" },
-            { value: "budget", label: "Budget" },
+            // [stenas:agent-visibility]
+            ...(restrictedAgentAccess
+              ? []
+              : [
+                { value: "configuration", label: "Configuration" },
+                { value: "budget", label: "Budget" },
+              ]),
             ...pluginTabItems.map((item) => ({
               value: item.value,
               label: item.label,

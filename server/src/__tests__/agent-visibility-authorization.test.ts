@@ -154,15 +154,29 @@ describeEmbeddedPostgres("agent visibility authorization", () => {
     expect(visibility.restricted).toBe(false);
   });
 
-  it("filters issue read/comment/mutate by assignee and closes the missing-field bypass", async () => {
+  it("applies the own-or-granted task rule to read/comment/mutate and closes the missing-field bypass", async () => {
     const s = await seed(ctx.db);
     const authz = authorizationService(ctx.db);
     const actor = board(s.users.operator!, s.company.id, "operator");
-    for (const [issue, expected] of [
+    const extra = async (values: Record<string, string | null>) =>
+      ctx.db
+        .insert(issues)
+        .values({ companyId: s.company.id, title: `Issue ${randomUUID()}`, status: "todo", priority: "medium", ...values })
+        .returning()
+        .then((rows) => rows[0]!);
+    const me = s.users.operator!;
+    const cases = [
       [s.issueGranted, true],
-      [s.issueUnassigned, true],
+      [s.issueUnassigned, false],
       [s.issueHidden, false],
-    ] as const) {
+      [await extra({ createdByUserId: me }), true],
+      [await extra({ assigneeUserId: me }), true],
+      [await extra({ createdByAgentId: s.granted.id }), true],
+      [await extra({ createdByAgentId: s.hidden.id }), false],
+      [await extra({ assigneeUserId: s.users.owner!, createdByUserId: s.users.owner! }), false],
+      [await extra({ createdByUserId: me, assigneeAgentId: s.hidden.id }), true],
+    ] as const;
+    for (const [issue, expected] of cases) {
       for (const action of ["issue:read", "issue:comment", "issue:mutate"] as const) {
         const decision = await authz.decide({ actor, action, resource: issueResource(issue) });
         expect(decision.allowed, `${action} ${issue.title}`).toBe(expected);
