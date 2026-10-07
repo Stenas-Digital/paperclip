@@ -350,7 +350,10 @@ describe.sequential("company route cross-company authorization", () => {
     await request(app).post(`/api/companies/${companyAId}/export`).send(exportRequest).expect(200);
     await request(app).post(`/api/companies/${companyAId}/exports/preview`).send(exportRequest).expect(200);
     await request(app).post(`/api/companies/${companyAId}/imports/preview`).send(importRequest(companyAId)).expect(200);
-    await request(app).post(`/api/companies/${companyAId}/imports/apply`).send(importRequest(companyAId)).expect(200);
+    // [stenas:identity-lock] CEO agents may preview imports but not apply them.
+    const apply = await request(app).post(`/api/companies/${companyAId}/imports/apply`).send(importRequest(companyAId));
+    expect(apply.status).toBe(403);
+    expect(apply.body.error).toContain("cannot apply company imports");
 
     const archive = await request(app).post(`/api/companies/${companyAId}/archive`).send({});
     expect(archive.status).toBe(403);

@@ -232,6 +232,7 @@ import {
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
+  assertNoAgentAssigneeAdapterConfigOverride, // [stenas:identity-lock]
 } from "./workspace-command-authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
@@ -11599,6 +11600,8 @@ export function issueRoutes(
         req,
         collectIssueWorkspaceCommandPaths(req.body),
       );
+      // [stenas:identity-lock]
+      assertNoAgentAssigneeAdapterConfigOverride(req, req.body);
       const sanitizedBody = await sanitizeIssueCreateAttribution(
         db,
         req,
@@ -12097,6 +12100,8 @@ export function issueRoutes(
         req,
         collectIssueWorkspaceCommandPaths(req.body),
       );
+      // [stenas:identity-lock]
+      assertNoAgentAssigneeAdapterConfigOverride(req, req.body);
       const sanitizedBody = await sanitizeIssueCreateAttribution(
         db,
         req,
@@ -12358,6 +12363,8 @@ export function issueRoutes(
           req,
           collectIssueWorkspaceCommandPaths(childBody),
         );
+        // [stenas:identity-lock]
+        assertNoAgentAssigneeAdapterConfigOverride(req, childBody);
         if (childBody.assigneeAgentId || childBody.assigneeUserId) {
           await assertCanAssignTasks(req, sourceIssue.companyId, {
             projectId: childBody.projectId ?? sourceIssue.projectId ?? null,
@@ -12779,6 +12786,8 @@ export function issueRoutes(
         req,
         collectIssueWorkspaceCommandPaths(req.body),
       );
+      // [stenas:identity-lock]
+      assertNoAgentAssigneeAdapterConfigOverride(req, req.body);
       if (req.actor.type === "agent" && req.body.onBehalfOfUserId != null) {
         await auditAgentIssueCommentAttributionSpoof({
           db,

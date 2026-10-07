@@ -2894,6 +2894,54 @@ export function agentRoutes(
     );
   }
 
+  // [stenas:identity-lock] Each agent runs as its own Unix user, selected by its
+  // execution environment. An agent must not be able to move itself (or a hire)
+  // onto another identity, or change what runs there. See
+  // doc/plans/2026-10-07-identity-lock.md.
+  const IDENTITY_LOCK_HIRE_FORBIDDEN_ADAPTER_KEYS = [
+    "command",
+    "agentCommand",
+    "acpAgentCommand",
+    "args",
+    "extraArgs",
+    "env",
+    "filesystemSandboxCommand",
+    "managedAiConnection",
+  ] as const;
+
+  function assertAgentActorCannotChangeExecutionIdentity(
+    req: Request,
+    body: Record<string, unknown>,
+  ) {
+    if (req.actor.type !== "agent") return;
+    const changed = ["adapterType", "defaultEnvironmentId", "role", "adapterConfig"].filter(
+      (key) => hasOwn(body, key),
+    );
+    if (changed.length === 0) return;
+    throw forbidden(
+      `Agent-authenticated callers cannot change an agent's execution identity (${changed.join(", ")})`,
+    );
+  }
+
+  function assertAgentActorCannotChooseHireExecutionIdentity(
+    req: Request,
+    defaultEnvironmentId: unknown,
+    adapterConfig: Record<string, unknown>,
+  ) {
+    if (req.actor.type !== "agent") return;
+    const changed: string[] = [];
+    if (defaultEnvironmentId !== undefined && defaultEnvironmentId !== null) {
+      changed.push("defaultEnvironmentId");
+    }
+    for (const key of IDENTITY_LOCK_HIRE_FORBIDDEN_ADAPTER_KEYS) {
+      if (adapterConfig[key] !== undefined) changed.push(`adapterConfig.${key}`);
+    }
+    if (changed.length === 0) return;
+    throw forbidden(
+      `Agent-authenticated callers cannot choose a new agent's execution identity (${changed.join(", ")})`,
+    );
+  }
+
   function summarizeAgentUpdateDetails(patch: Record<string, unknown>) {
     const changedTopLevelKeys = Object.keys(patch).sort();
     const details: Record<string, unknown> = { changedTopLevelKeys };
@@ -4335,6 +4383,11 @@ export function agentRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
     await assertCanUpdateAgent(req, existing);
+    // [stenas:identity-lock] a rollback restores adapterType, adapterConfig and
+    // defaultEnvironmentId wholesale, so agents may not trigger one.
+    if (req.actor.type === "agent") {
+      throw forbidden("Agent-authenticated callers cannot roll back agent configuration");
+    }
 
     const revision = await svc.getConfigRevision(id, revisionId);
     if (!revision) {
@@ -4496,6 +4549,12 @@ export function agentRoutes(
       rawHireAdapterConfig,
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
+    // [stenas:identity-lock]
+    assertAgentActorCannotChooseHireExecutionIdentity(
+      req,
+      hireInput.defaultEnvironmentId,
+      rawHireAdapterConfig,
+    );
     const hiredAgentId = randomUUID();
     const authInheritance = await applyHiringAgentAuthInheritance(
       req,
@@ -4800,6 +4859,12 @@ export function agentRoutes(
       rawCreateAdapterConfig,
     );
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
+    // [stenas:identity-lock]
+    assertAgentActorCannotChooseHireExecutionIdentity(
+      req,
+      createInput.defaultEnvironmentId,
+      rawCreateAdapterConfig,
+    );
     const agentId = randomUUID();
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
@@ -5251,6 +5316,9 @@ export function agentRoutes(
       }
       patchData.adapterConfig = adapterConfig;
     }
+    // [stenas:identity-lock] after the narrower adapterConfig checks above, so
+    // their more specific errors still win.
+    assertAgentActorCannotChangeExecutionIdentity(req, req.body as Record<string, unknown>);
 
     // Switching an existing agent ONTO another adapter is a new selection, so
     // it gets the selectable check; keeping the agent's current adapter (even

@@ -278,7 +278,9 @@ describeEmbeddedPostgres("hired agent provider credential inheritance", () => {
     expect(childEnvOf(res).ANTHROPIC_API_KEY).toMatchObject({ type: "secret_ref", secretId: secret.id });
   });
 
-  it("keeps the child-supplied ANTHROPIC_API_KEY and inherits no Claude credential at all", async () => {
+  // [stenas:identity-lock] agents cannot supply env for a hire, so the upstream
+  // "child-supplied key wins" case is refused outright.
+  it("refuses a child-supplied ANTHROPIC_API_KEY from a hiring agent", async () => {
     const companyId = await seedCompany();
     const childSecret = await createCompanySecret(companyId, "ant-child-key");
     // The parent holds the fixed Claude OAuth binding, which is normally
@@ -294,10 +296,8 @@ describeEmbeddedPostgres("hired agent provider credential inheritance", () => {
       adapterConfig: { env: { ANTHROPIC_API_KEY: secretRef(childSecret.id) } },
     });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
-    const childEnv = childEnvOf(res);
-    expect(childEnv.ANTHROPIC_API_KEY).toMatchObject({ type: "secret_ref", secretId: childSecret.id });
-    expect(childEnv.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toContain("execution identity");
   });
 
   it("does not inherit a plain environment value", async () => {

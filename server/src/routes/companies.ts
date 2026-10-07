@@ -1167,6 +1167,11 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
   router.post("/:companyId/imports/apply", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertSameCompanyCeoAgentOrBoard(req, companyId, "company imports");
+    // [stenas:identity-lock] an import creates agents with arbitrary adapter
+    // config and environments, bypassing the agent identity checks.
+    if (req.actor.type === "agent") {
+      throw forbidden("Agent-authenticated callers cannot apply company imports");
+    }
     const body = companyPortabilityImportSchema.parse(req.body);
     if (body.target.mode === "existing_company" && body.target.companyId !== companyId) {
       throw forbidden("Safe import route can only target the route company");

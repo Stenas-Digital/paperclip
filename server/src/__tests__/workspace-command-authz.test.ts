@@ -1,5 +1,8 @@
+import type { Request } from "express";
 import { describe, expect, it } from "vitest";
 import {
+  assertNoAgentAssigneeAdapterConfigOverride,
+  assertNoAgentProjectEnvMutation,
   collectExecutionWorkspaceCommandPaths,
   collectIssueWorkspaceCommandPaths,
   collectProjectExecutionWorkspaceCommandPaths,
@@ -66,5 +69,43 @@ describe("workspace host-command mutation detection", () => {
         jobs: [null, "build"],
       },
     })).toEqual([]);
+  });
+});
+
+// [stenas:identity-lock]
+describe("agent identity lock on task overrides and project env", () => {
+  const agentReq = { actor: { type: "agent", agentId: "agent-1" } } as unknown as Request;
+  const boardReq = { actor: { type: "board", userId: "user-1" } } as unknown as Request;
+
+  it("refuses agent-set assigneeAdapterOverrides.adapterConfig", () => {
+    expect(() => assertNoAgentAssigneeAdapterConfigOverride(agentReq, {
+      assigneeAdapterOverrides: { adapterConfig: { env: { NODE_OPTIONS: "--require /tmp/x.js" } } },
+    })).toThrow(/assigneeAdapterOverrides\.adapterConfig\.env/);
+    expect(() => assertNoAgentAssigneeAdapterConfigOverride(agentReq, {
+      assigneeAdapterOverrides: { adapterConfig: { command: "/bin/sh" } },
+    })).toThrow(/assigneeAdapterOverrides\.adapterConfig\.command/);
+  });
+
+  it("allows agents to send overrides without adapterConfig", () => {
+    expect(() => assertNoAgentAssigneeAdapterConfigOverride(agentReq, {
+      assigneeAdapterOverrides: { useProjectWorkspace: true },
+    })).not.toThrow();
+    expect(() => assertNoAgentAssigneeAdapterConfigOverride(agentReq, {
+      assigneeAdapterOverrides: { adapterConfig: {} },
+    })).not.toThrow();
+    expect(() => assertNoAgentAssigneeAdapterConfigOverride(agentReq, {})).not.toThrow();
+  });
+
+  it("leaves board users free to set overrides and project env", () => {
+    expect(() => assertNoAgentAssigneeAdapterConfigOverride(boardReq, {
+      assigneeAdapterOverrides: { adapterConfig: { model: "x" } },
+    })).not.toThrow();
+    expect(() => assertNoAgentProjectEnvMutation(boardReq, { env: { A: "b" } })).not.toThrow();
+  });
+
+  it("refuses agent-set project env, including clearing it", () => {
+    expect(() => assertNoAgentProjectEnvMutation(agentReq, { env: { A: "b" } })).toThrow(/project env/);
+    expect(() => assertNoAgentProjectEnvMutation(agentReq, { env: null })).toThrow(/project env/);
+    expect(() => assertNoAgentProjectEnvMutation(agentReq, { name: "x" } as { env?: unknown })).not.toThrow();
   });
 });

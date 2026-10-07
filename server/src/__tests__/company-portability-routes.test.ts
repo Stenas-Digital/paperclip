@@ -733,18 +733,19 @@ describe.sequential("company portability routes", () => {
       runId: "run-1",
     });
 
-    for (const path of [
-      `/api/companies/${companyId}/imports/preview`,
-      `/api/companies/${companyId}/imports/apply`,
-    ]) {
-      const res = await request(app).post(path).send({
-        ...importRequest,
-        target: { mode: "existing_company", companyId: otherCompanyId },
-      });
-
-      expect(res.status).toBe(403);
-      expect(res.body.error).toContain("only target the route company");
-    }
+    const preview = await request(app).post(`/api/companies/${companyId}/imports/preview`).send({
+      ...importRequest,
+      target: { mode: "existing_company", companyId: otherCompanyId },
+    });
+    expect(preview.status).toBe(403);
+    expect(preview.body.error).toContain("only target the route company");
+    // [stenas:identity-lock] agents cannot apply imports at all.
+    const apply = await request(app).post(`/api/companies/${companyId}/imports/apply`).send({
+      ...importRequest,
+      target: { mode: "existing_company", companyId: otherCompanyId },
+    });
+    expect(apply.status).toBe(403);
+    expect(apply.body.error).toContain("cannot apply company imports");
     expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
     expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
@@ -814,12 +815,14 @@ describe.sequential("company portability routes", () => {
   });
 
   it.sequential("rejects replace collision strategy on CEO-safe import apply routes", async () => {
+    // [stenas:identity-lock] agents are refused before this check, so use a board user.
     const app = await createApp({
-      type: "agent",
-      agentId: ceoAgentId,
-      companyId: "11111111-1111-4111-8111-111111111111",
-      source: "agent_key",
-      runId: "run-1",
+      type: "board",
+      userId: "company-admin",
+      companyIds: ["11111111-1111-4111-8111-111111111111"],
+      memberships: [{ companyId: "11111111-1111-4111-8111-111111111111", status: "active", membershipRole: "admin" }],
+      source: "session",
+      isInstanceAdmin: false,
     });
 
     const res = await request(app)
@@ -1252,12 +1255,14 @@ describe.sequential("company portability routes", () => {
 
   it.sequential("forwards pauseAutomations from CEO-safe import apply bodies to the portability service", async () => {
     mockCompanyPortabilityService.importBundle.mockResolvedValueOnce(createImportResult("created"));
+    // [stenas:identity-lock] agents cannot apply imports, so use a board user.
     const app = await createApp({
-      type: "agent",
-      agentId: ceoAgentId,
-      companyId,
-      source: "agent_key",
-      runId: "run-1",
+      type: "board",
+      userId: "company-admin",
+      companyIds: [companyId],
+      memberships: [{ companyId: companyId, status: "active", membershipRole: "admin" }],
+      source: "session",
+      isInstanceAdmin: false,
     });
 
     const res = await request(app)
@@ -1267,7 +1272,7 @@ describe.sequential("company portability routes", () => {
     expect(res.status).toBe(200);
     expect(mockCompanyPortabilityService.importBundle).toHaveBeenCalledWith(
       { ...importRequest, pauseAutomations: true },
-      null,
+      "company-admin",
       { mode: "agent_safe", sourceCompanyId: companyId, pauseAutomations: true },
     );
   });

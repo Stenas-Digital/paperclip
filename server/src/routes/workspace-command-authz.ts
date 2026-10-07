@@ -74,6 +74,31 @@ export function assertNoAgentHostWorkspaceCommandMutation(req: Request, paths: s
   );
 }
 
+// [stenas:identity-lock] A task's assigneeAdapterOverrides.adapterConfig is merged
+// into the assignee's run, which executes as the assignee's Unix user. Agents may
+// not set it, or one agent could run its own command or env as another identity.
+export function assertNoAgentAssigneeAdapterConfigOverride(
+  req: Request,
+  input: { assigneeAdapterOverrides?: unknown },
+) {
+  if (req.actor.type !== "agent" || !isRecord(input.assigneeAdapterOverrides)) return;
+  const adapterConfig = input.assigneeAdapterOverrides.adapterConfig;
+  if (!isRecord(adapterConfig) || Object.keys(adapterConfig).length === 0) return;
+  throw forbidden(
+    `Agent keys cannot set assigneeAdapterOverrides.adapterConfig (${Object.keys(adapterConfig)
+      .sort()
+      .map((key) => `assigneeAdapterOverrides.adapterConfig.${key}`)
+      .join(", ")}).`,
+  );
+}
+
+// [stenas:identity-lock] Project env is merged into every run in the project,
+// including other agents' runs under their own Unix users, so agents may not set it.
+export function assertNoAgentProjectEnvMutation(req: Request, input: { env?: unknown }) {
+  if (req.actor.type !== "agent" || input.env === undefined) return;
+  throw forbidden("Agent keys cannot set project env.");
+}
+
 export function collectAgentAdapterWorkspaceCommandPaths(
   adapterConfig: unknown,
   prefix = "adapterConfig",

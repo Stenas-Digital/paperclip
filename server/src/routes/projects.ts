@@ -37,6 +37,7 @@ import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectProjectExecutionWorkspaceCommandPaths,
   collectProjectWorkspaceCommandPaths,
+  assertNoAgentProjectEnvMutation, // [stenas:identity-lock]
 } from "./workspace-command-authz.js";
 import { assertCanManageProjectWorkspaceRuntimeServices } from "./workspace-runtime-service-authz.js";
 import { getTelemetryClient } from "../telemetry.js";
@@ -253,6 +254,7 @@ export function projectRoutes(db: Db) {
       ],
     );
     await assertNoManagedSandboxWorkspacePath(workspace);
+    assertNoAgentProjectEnvMutation(req, projectData); // [stenas:identity-lock]
     if (projectData.env !== undefined) {
       projectData.env = await secretsSvc.normalizeEnvBindingsForPersistence(
         companyId,
@@ -330,6 +332,7 @@ export function projectRoutes(db: Db) {
       req,
       collectProjectExecutionWorkspaceCommandPaths(body.executionWorkspacePolicy),
     );
+    assertNoAgentProjectEnvMutation(req, body); // [stenas:identity-lock]
     await assertProjectEnvironmentSelection(
       existing.companyId,
       readProjectPolicyEnvironmentId(body.executionWorkspacePolicy),

@@ -988,6 +988,64 @@ describe.sequential("agent permission routes", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
+  // [stenas:identity-lock]
+  describe("agent identity lock", () => {
+    const agentActor = () => ({
+      type: "agent" as const,
+      agentId,
+      companyId,
+      source: "agent_key" as const,
+      runId: "run-1",
+    });
+
+    it.each([
+      { name: "its environment", body: { defaultEnvironmentId: "33333333-3333-4333-8333-333333333333" } },
+      { name: "a cleared environment", body: { defaultEnvironmentId: null } },
+      { name: "its adapter env", body: { adapterConfig: { env: { NODE_OPTIONS: "--require /tmp/x.js" } } } },
+      { name: "its command", body: { adapterConfig: { command: "/bin/sh" } } },
+      { name: "its adapter type", body: { adapterType: "codex_local" } },
+      { name: "its role", body: { role: "ceo" } },
+    ])("blocks an agent changing $name on itself", async ({ body }) => {
+      const app = await createApp(agentActor());
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${agentId}`)
+        .send(body));
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("execution identity");
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("blocks agent-authenticated configuration rollbacks", async () => {
+      const app = await createApp(agentActor());
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${agentId}/config-revisions/44444444-4444-4444-8444-444444444444/rollback`)
+        .send({}));
+
+      expect(res.status).toBe(403);
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { name: "an environment", extra: { defaultEnvironmentId: "33333333-3333-4333-8333-333333333333" } },
+      { name: "a command", extra: { adapterConfig: { command: "/bin/sh" } } },
+      { name: "adapter env", extra: { adapterConfig: { env: { ODOO_API_KEY: "x" } } } },
+    ])("blocks agent hires that choose $name", async ({ extra }) => {
+      mockAccessService.hasPermission.mockResolvedValue(true);
+      const app = await createApp(agentActor());
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .post(`/api/companies/${companyId}/agent-hires`)
+        .send({ name: "Hire", role: "engineer", adapterType: "claude_local", ...extra }));
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("execution identity");
+      expect(mockAgentService.create).not.toHaveBeenCalled();
+    });
+  });
+
   it("blocks direct agent creation for authenticated company members without agent create permission", async () => {
     mockAccessService.canUser.mockResolvedValue(false);
 

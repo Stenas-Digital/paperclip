@@ -89,15 +89,16 @@ describe("agent-created hires use managed AI connections", () => {
       ["ANTHROPIC_API_KEY", ""],
       ["CLAUDE_CONFIG_DIR", "/tmp/child-claude-home"],
       ["ANTHROPIC_BASE_URL", "https://example.invalid"],
-    ])(`${endpoint}: preserves an explicit child auth setting %s=%s`, async (key, value) => {
+    ])(`${endpoint}: refuses an explicit child auth setting %s=%s from an agent`, async (key, value) => {
+      // [stenas:identity-lock] agents cannot supply env for a hire; upstream
+      // preserved it here.
       const f = await fixture("anthropic");
-      const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/${endpoint}`).send({
+      const res = await request(f.app).post(`/api/companies/${f.companyId}/${endpoint}`).send({
         name: "Explicit auth", role: "engineer", adapterType: f.adapterType,
         adapterConfig: { env: { [key]: value } },
-      }));
-      expect(agent.runtimeConfig.aiConnection).toBeUndefined();
-      const [saved] = await db.select().from(agents).where(eq(agents.id, agent.id));
-      expect((saved.adapterConfig.env as Record<string, unknown>)[key]).toEqual({ type: "plain", value });
+      });
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toContain("execution identity");
     });
   }
 
@@ -143,15 +144,16 @@ describe("agent-created hires use managed AI connections", () => {
       ["openai", "claude_local", {}, "OPENAI_API_KEY"],
       ["anthropic", "paperclip_runner", { provider: "codex" }, "ANTHROPIC_API_KEY"],
       ["openai", "paperclip_runner", { provider: "acpx", acpxAgent: "claude" }, "OPENAI_API_KEY"],
-    ] as const)(`${endpoint}: ignores the %s auth key for a different provider in %s`, async (provider, adapterType, config, key) => {
+    ] as const)(`${endpoint}: refuses the %s auth key in a hire's env for %s`, async (provider, adapterType, config, key) => {
+      // [stenas:identity-lock] agents cannot supply env for a hire; upstream
+      // ignored the cross-provider key and bound a managed connection.
       const f = await fixture(provider);
-      const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/${endpoint}`).send({
+      const res = await request(f.app).post(`/api/companies/${f.companyId}/${endpoint}`).send({
         name: "Cross-provider config", role: "engineer", adapterType,
         adapterConfig: { ...config, env: { [key]: "leftover-parent-setting" } },
-      }));
-      expect(agent.runtimeConfig.aiConnection).toMatchObject({
-        provider: provider === "anthropic" ? "openai" : "anthropic", mode: "responsible_user",
       });
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toContain("execution identity");
     });
   }
 
